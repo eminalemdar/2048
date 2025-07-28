@@ -104,11 +104,11 @@ spec:
         default:
           namespace: "game-2048"
           backend:
-            image: "2048-backend:latest"
+            image: "emnalmdr/2048-backend:latest"
             replicas: 3
             port: 8000
           frontend:
-            image: "2048-frontend:latest"
+            image: "emnalmdr/2048-frontend:latest"
             replicas: 3
             port: 80
           ingress:
@@ -129,7 +129,7 @@ spec:
             properties:
               image:
                 type: string
-                default: "2048-backend:latest"
+                default: "emnalmdr/2048-backend:latest"
               replicas:
                 type: integer
                 default: 3
@@ -141,7 +141,7 @@ spec:
             properties:
               image:
                 type: string
-                default: "2048-frontend:latest"
+                default: "emnalmdr/2048-frontend:latest"
               replicas:
                 type: integer
                 default: 3
@@ -195,7 +195,7 @@ spec:
 
   resources:
     # Namespace
-    - id: namespace
+    - id: appNamespace
       template:
         apiVersion: v1
         kind: Namespace
@@ -207,7 +207,7 @@ spec:
             environment: "{{ .spec.environment }}"
 
     # DynamoDB Table
-    - id: dynamodb-table
+    - id: dynamodbTable
       template:
         apiVersion: dynamodb.services.k8s.aws/v1alpha1
         kind: Table
@@ -253,7 +253,7 @@ spec:
               value: database
 
     # S3 Bucket
-    - id: s3-bucket
+    - id: s3Bucket
       template:
         apiVersion: s3.services.k8s.aws/v1alpha1
         kind: Bucket
@@ -285,7 +285,7 @@ spec:
                 value: KRO
 
     # DynamoDB Service Account
-    - id: dynamodb-service-account
+    - id: dynamodbServiceAccount
       template:
         apiVersion: v1
         kind: ServiceAccount
@@ -301,7 +301,7 @@ spec:
         automountServiceAccountToken: true
 
     # S3 Service Account
-    - id: s3-service-account
+    - id: s3ServiceAccount
       template:
         apiVersion: v1
         kind: ServiceAccount
@@ -317,7 +317,7 @@ spec:
         automountServiceAccountToken: true
 
     # DynamoDB ConfigMap
-    - id: dynamodb-config
+    - id: dynamodbConfig
       template:
         apiVersion: v1
         kind: ConfigMap
@@ -339,7 +339,7 @@ spec:
           WRITE_CAPACITY_UNITS: "{{ .spec.dynamodb.writeCapacityUnits }}"
 
     # S3 ConfigMap
-    - id: s3-config
+    - id: s3Config
       template:
         apiVersion: v1
         kind: ConfigMap
@@ -363,7 +363,7 @@ spec:
           EXPIRATION_DAYS: "{{ .spec.s3.expiration }}"
 
     # Backend ConfigMap (only what the Go backend actually uses)
-    - id: backend-config
+    - id: backendConfig
       template:
         apiVersion: v1
         kind: ConfigMap
@@ -387,7 +387,7 @@ spec:
           ENVIRONMENT: "{{ .spec.environment }}"
 
     # Frontend ConfigMap (for React app)
-    - id: frontend-config
+    - id: frontendConfig
       template:
         apiVersion: v1
         kind: ConfigMap
@@ -405,7 +405,7 @@ spec:
           ENVIRONMENT: "{{ .spec.environment }}"
 
     # Backend Deployment
-    - id: backend-deployment
+    - id: backendDeployment
       template:
         apiVersion: apps/v1
         kind: Deployment
@@ -462,7 +462,7 @@ spec:
                     periodSeconds: 10
 
     # Backend Service
-    - id: backend-service
+    - id: backendService
       template:
         apiVersion: v1
         kind: Service
@@ -486,7 +486,7 @@ spec:
             app.kubernetes.io/component: backend
 
     # Frontend Deployment
-    - id: frontend-deployment
+    - id: frontendDeployment
       template:
         apiVersion: apps/v1
         kind: Deployment
@@ -542,7 +542,7 @@ spec:
                     periodSeconds: 10
 
     # Frontend Service
-    - id: frontend-service
+    - id: frontendService
       template:
         apiVersion: v1
         kind: Service
@@ -601,7 +601,7 @@ spec:
                           number: "{{ .spec.application.backend.port }}"
 
     # HPA for Backend
-    - id: backend-hpa
+    - id: backendHpa
       template:
         apiVersion: autoscaling/v2
         kind: HorizontalPodAutoscaler
@@ -629,7 +629,7 @@ spec:
                   averageUtilization: "{{ .spec.application.autoscaling.targetCPU }}"
 
     # HPA for Frontend
-    - id: frontend-hpa
+    - id: frontendHpa
       template:
         apiVersion: autoscaling/v2
         kind: HorizontalPodAutoscaler

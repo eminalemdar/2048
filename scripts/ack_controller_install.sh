@@ -87,6 +87,9 @@ install() {
     fi
     
     log_info "Installing Helm chart..."
+    log_info "Chart repository: oci://${CHART_REPO}"
+    log_info "Version: ${RELEASE_VERSION}"
+    
     if helm install --create-namespace --namespace "${ACK_SYSTEM_NAMESPACE}" "ack-${SERVICE}-controller" \
         --set "aws.region=${AWS_REGION}" \
         "oci://${CHART_REPO}" \
@@ -94,7 +97,15 @@ install() {
         log_info "Successfully installed ACK ${SERVICE} controller"
     else
         log_error "Failed to install ACK ${SERVICE} controller"
-        exit 1
+        log_info "Trying without version specification..."
+        if helm install --create-namespace --namespace "${ACK_SYSTEM_NAMESPACE}" "ack-${SERVICE}-controller" \
+            --set "aws.region=${AWS_REGION}" \
+            "oci://${CHART_REPO}"; then
+            log_info "Successfully installed ACK ${SERVICE} controller (latest version)"
+        else
+            log_error "Failed to install ACK ${SERVICE} controller"
+            exit 1
+        fi
     fi
 }
 

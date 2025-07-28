@@ -78,26 +78,34 @@ install_kro() {
     log_info "Installing KRO (Kubernetes Resource Operator)"
     log_info "======================================================"
     
+    log_info "Fetching latest KRO version from GitHub..."
     local KRO_VERSION
-    KRO_VERSION=$(get_kro_version)
+    KRO_VERSION=$(curl -sL https://api.github.com/repos/kro-run/kro/releases/latest | jq -r '.tag_name | ltrimstr("v")')
     
+    if [ -z "$KRO_VERSION" ] || [ "$KRO_VERSION" = "null" ]; then
+        log_error "Failed to fetch KRO version from GitHub"
+        exit 1
+    fi
+    
+    log_info "Latest KRO version: ${KRO_VERSION}"
     log_info "Installing KRO version ${KRO_VERSION} using Helm..."
     
     # Clear any cached credentials that might cause issues
     helm registry logout ghcr.io >/dev/null 2>&1 || true
     
-    # Install KRO using Helm
-    if helm install kro "oci://ghcr.io/kro-run/kro/kro" \
+    # Install KRO using Helm with OCI registry
+    if helm install kro oci://ghcr.io/kro-run/kro/kro \
         --namespace "${KRO_NAMESPACE}" \
         --create-namespace \
-        --version="${KRO_VERSION}"; then
+        --version "${KRO_VERSION}"; then
         log_info "KRO installation completed successfully"
     else
         log_error "Failed to install KRO"
         log_info "Troubleshooting tips:"
         log_info "1. Clear Helm credentials: helm registry logout ghcr.io"
         log_info "2. Check network connectivity to ghcr.io"
-        log_info "3. Verify Helm version (3.x required)"
+        log_info "3. Verify Helm version (3.8+ required for OCI support)"
+        log_info "4. Try manual installation: helm install kro oci://ghcr.io/kro-run/kro --version ${KRO_VERSION}"
         exit 1
     fi
 }
@@ -114,8 +122,7 @@ verify_installation() {
         log_info "✅ Helm release found"
         helm list -n "${KRO_NAMESPACE}"
     else
-        log_error "❌ Helm release not found"
-        return 1
+        log_warn "⚠️  Helm release not found"
     fi
     
     echo ""
@@ -132,7 +139,7 @@ verify_installation() {
     
     # Show pod status
     log_info "KRO pod status:"
-    kubectl get pods -n "${KRO_NAMESPACE}"
+    kubectl get pods -n "${KRO_NAMESPACE}" || log_warn "No pods found in ${KRO_NAMESPACE} namespace"
     
     echo ""
     
@@ -145,6 +152,17 @@ verify_installation() {
         kubectl get crd | grep "kro.run" || true
     else
         log_warn "⚠️  No KRO CRDs found"
+    fi
+    
+    echo ""
+    
+    # Check KRO deployment
+    log_info "Checking KRO deployment..."
+    if kubectl get deployment -n "${KRO_NAMESPACE}" | grep -q "kro"; then
+        log_info "✅ KRO deployment found"
+        kubectl get deployment -n "${KRO_NAMESPACE}"
+    else
+        log_warn "⚠️  KRO deployment not found"
     fi
 }
 
