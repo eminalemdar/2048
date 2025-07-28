@@ -7,12 +7,14 @@ Kubernetes manifests for deploying the 2048 game to an EKS cluster with DynamoDB
 Before deploying the application, ensure you have:
 
 1. **EKS Cluster** deployed via OpenTofu:
+
    ```bash
    cd ../opentofu
    tofu apply
    ```
 
 2. **kubectl configured**:
+
    ```bash
    aws eks --region eu-west-1 update-kubeconfig --name game2048-dev-cluster
    ```
@@ -39,6 +41,7 @@ Before deploying the application, ensure you have:
 This deployment uses **AWS DynamoDB** as the primary database. Choose one of these approaches:
 
 ### Option 1: ACK Controllers (Recommended)
+
 ```bash
 # Install DynamoDB controller
 ../scripts/ack_controller_install.sh dynamodb
@@ -48,6 +51,7 @@ This deployment uses **AWS DynamoDB** as the primary database. Choose one of the
 ```
 
 ### Option 2: KRO (Kubernetes Resource Operator)
+
 ```bash
 # Install KRO using our script (recommended)
 ../scripts/kro_install.sh
@@ -57,6 +61,7 @@ This deployment uses **AWS DynamoDB** as the primary database. Choose one of the
 ```
 
 ### Option 3: Manual AWS CLI
+
 ```bash
 # Create DynamoDB table manually
 aws dynamodb create-table \
@@ -74,16 +79,20 @@ aws dynamodb create-table \
 ## 🌐 Access
 
 ### Port Forward
+
 ```bash
 kubectl port-forward -n game-2048 svc/frontend-service 3000:80
 ```
 
 ### Ingress
+
 Add to `/etc/hosts`:
-```
+
+```text
 <INGRESS_IP> 2048.local
 ```
-Visit: http://2048.local
+
+Visit: <http://2048.local>
 
 ## 🧹 Cleanup
 
