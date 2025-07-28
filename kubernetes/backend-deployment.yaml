@@ -28,6 +28,15 @@ spec:
         env:
         - name: PORT
           value: "8000"
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: DYNAMODB_TABLE
+          value: "game2048-leaderboard"
+        # Uncomment below for S3 support
+        # - name: S3_BUCKET
+        #   value: "your-2048-game-bucket"
+        # AWS credentials should be provided via IAM roles or service accounts
+        # For development, you can use AWS credentials as secrets
         resources:
           requests:
             memory: "64Mi"

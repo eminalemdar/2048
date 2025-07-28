@@ -1,11 +1,33 @@
 version: "3.8"
 
 services:
+  # DynamoDB Local for development
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: 2048-dynamodb
+    ports:
+      - "8001:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
     ports:
       - "8000:8000"
+    environment:
+      - PORT=8000
+      - AWS_REGION=us-east-1
+      - DYNAMODB_TABLE=game2048-leaderboard
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      # For production, remove DYNAMODB_ENDPOINT and use real DynamoDB
+      # Uncomment for S3 support
+      # - S3_BUCKET=your-2048-game-bucket
+      # For local development with DynamoDB Local
+      - AWS_ACCESS_KEY_ID=dummy
+      - AWS_SECRET_ACCESS_KEY=dummy
+    depends_on:
+      - dynamodb-local
     restart: unless-stopped
 
   frontend:

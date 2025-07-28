@@ -23,6 +23,14 @@ export default function Game2048() {
   });
   const [showMenu, setShowMenu] = useState(false);
   const [showHowToPlay, setShowHowToPlay] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showSubmitScore, setShowSubmitScore] = useState(false);
+  const [leaderboardData, setLeaderboardData] = useState([]);
+  const [playerName, setPlayerName] = useState(() => {
+    return localStorage.getItem('2048-player-name') || '';
+  });
+  const [gameStartTime, setGameStartTime] = useState(null);
+  const [moveCount, setMoveCount] = useState(0);
   
   // Use refs to store current values for event handlers
   const gameIdRef = useRef(null);
@@ -122,12 +130,56 @@ export default function Game2048() {
       gameOverRef.current = false;
       setWon(false);
       setNewTiles([]);
+      setGameStartTime(Date.now());
+      setMoveCount(0);
     } catch (err) {
       setError("Error creating new game.");
     } finally {
       setLoading(false);
       loadingRef.current = false;
     }
+  };
+
+  // Leaderboard functions
+  const fetchLeaderboard = async () => {
+    try {
+      const res = await axios.get(`${API}/leaderboard/top?limit=10`);
+      setLeaderboardData(res.data.scores || []);
+    } catch (err) {
+      console.error("Error fetching leaderboard:", err);
+    }
+  };
+
+  const submitScore = async () => {
+    if (!playerName.trim() || score === 0) return;
+
+    const duration = gameStartTime ? Math.floor((Date.now() - gameStartTime) / 1000) : 0;
+    const playerId = localStorage.getItem('2048-player-id') || generatePlayerId();
+    
+    if (!localStorage.getItem('2048-player-id')) {
+      localStorage.setItem('2048-player-id', playerId);
+    }
+
+    try {
+      await axios.post(`${API}/leaderboard/submit`, {
+        playerId,
+        name: playerName.trim(),
+        score,
+        duration,
+        moves: moveCount
+      });
+      
+      localStorage.setItem('2048-player-name', playerName.trim());
+      setShowSubmitScore(false);
+      setShowLeaderboard(true);
+      fetchLeaderboard();
+    } catch (err) {
+      setError("Error submitting score.");
+    }
+  };
+
+  const generatePlayerId = () => {
+    return 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
   };
 
   const handleMove = async (dir) => {
@@ -165,6 +217,14 @@ export default function Game2048() {
       
       setNewTiles(newTilesArr);
       setTimeout(() => setNewTiles([]), 200);
+      
+      // Increment move count
+      setMoveCount(prev => prev + 1);
+      
+      // Check if game ended and show submit score option
+      if (res.data.gameOver && score > 0) {
+        setTimeout(() => setShowSubmitScore(true), 1000);
+      }
     } catch (err) {
       setError("Error making move.");
     } finally {
@@ -310,11 +370,115 @@ export default function Game2048() {
                 className="menu-item"
                 onClick={() => {
                   setShowMenu(false);
+                  setShowLeaderboard(true);
+                  fetchLeaderboard();
+                }}
+              >
+                Leaderboard
+              </button>
+              <button 
+                className="menu-item"
+                onClick={() => {
+                  setShowMenu(false);
                   setShowHowToPlay(true);
                 }}
               >
                 How to Play
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leaderboard Modal */}
+      {showLeaderboard && (
+        <div className="modal-overlay" onClick={() => setShowLeaderboard(false)}>
+          <div className={`modal ${isDarkMode ? 'dark' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>🏆 Leaderboard</h2>
+              <button onClick={() => setShowLeaderboard(false)} className="close-btn">×</button>
+            </div>
+            <div className="modal-content">
+              <div className="leaderboard">
+                {leaderboardData.length > 0 ? (
+                  <div className="leaderboard-list">
+                    {leaderboardData.map((entry, index) => (
+                      <div key={entry.id} className={`leaderboard-entry ${index < 3 ? 'top-three' : ''}`}>
+                        <div className="rank">
+                          {index === 0 && '🥇'}
+                          {index === 1 && '🥈'}
+                          {index === 2 && '🥉'}
+                          {index > 2 && `#${index + 1}`}
+                        </div>
+                        <div className="player-info">
+                          <div className="player-name">{entry.name}</div>
+                          <div className="player-stats">
+                            {entry.moves} moves • {Math.floor(entry.duration / 60)}:{(entry.duration % 60).toString().padStart(2, '0')}
+                          </div>
+                        </div>
+                        <div className="player-score">{entry.score.toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-leaderboard">
+                    <p>No scores yet! Be the first to submit a score.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Submit Score Modal */}
+      {showSubmitScore && (
+        <div className="modal-overlay" onClick={() => setShowSubmitScore(false)}>
+          <div className={`modal ${isDarkMode ? 'dark' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>🎉 Submit Your Score</h2>
+              <button onClick={() => setShowSubmitScore(false)} className="close-btn">×</button>
+            </div>
+            <div className="modal-content">
+              <div className="submit-score">
+                <div className="score-summary">
+                  <div className="final-score">
+                    <span className="label">Final Score:</span>
+                    <span className="value">{score.toLocaleString()}</span>
+                  </div>
+                  <div className="game-stats">
+                    <span>Moves: {moveCount}</span>
+                    <span>Time: {gameStartTime ? Math.floor((Date.now() - gameStartTime) / 1000 / 60) : 0}:{gameStartTime ? ((Math.floor((Date.now() - gameStartTime) / 1000)) % 60).toString().padStart(2, '0') : '00'}</span>
+                  </div>
+                </div>
+                <div className="name-input">
+                  <label htmlFor="playerName">Your Name:</label>
+                  <input
+                    id="playerName"
+                    type="text"
+                    value={playerName}
+                    onChange={(e) => setPlayerName(e.target.value)}
+                    placeholder="Enter your name"
+                    maxLength={20}
+                    className={`name-field ${isDarkMode ? 'dark' : ''}`}
+                  />
+                </div>
+                <div className="submit-actions">
+                  <button
+                    onClick={submitScore}
+                    disabled={!playerName.trim()}
+                    className={`submit-btn ${isDarkMode ? 'dark' : ''}`}
+                  >
+                    Submit Score
+                  </button>
+                  <button
+                    onClick={() => setShowSubmitScore(false)}
+                    className={`skip-btn ${isDarkMode ? 'dark' : ''}`}
+                  >
+                    Skip
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -1,0 +1,27 @@
+# Copy this file to terraform.tfvars and customize the values
+
+# AWS Configuration
+aws_region = "eu-west-1"
+
+# Project Configuration
+project_name = "game2048"
+environment  = "dev"
+
+# VPC Configuration
+vpc_cidr = "172.16.0.0/16"
+
+# EKS Configuration
+eks_cluster_version        = "1.28"
+eks_node_instance_types    = ["m5.xlarge"]
+eks_node_desired_capacity  = 2
+eks_node_max_capacity      = 4
+eks_node_min_capacity      = 1
+
+# EKS Additional Users (optional)
+eks_auth_users = [
+  # {
+  #   userarn  = "arn:aws:iam::123456789012:user/developer"
+  #   username = "developer"
+  #   groups   = ["system:masters"]
+  # }
+]

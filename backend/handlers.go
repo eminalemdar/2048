@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -112,4 +113,115 @@ func stateHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(game)
+}
+
+// Leaderboard Handlers
+
+func submitScoreHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	type ScoreSubmission struct {
+		PlayerID string `json:"playerId"`
+		Name     string `json:"name"`
+		Score    int    `json:"score"`
+		Duration int    `json:"duration"`
+		Moves    int    `json:"moves"`
+	}
+
+	var submission ScoreSubmission
+	if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate submission
+	if submission.Name == "" || submission.Score <= 0 {
+		http.Error(w, "Invalid submission data", http.StatusBadRequest)
+		return
+	}
+
+	// Create leaderboard entry
+	entry := LeaderboardEntry{
+		PlayerID:  submission.PlayerID,
+		Name:      submission.Name,
+		Score:     submission.Score,
+		Duration:  submission.Duration,
+		Moves:     submission.Moves,
+		Timestamp: time.Now(),
+	}
+
+	// Add to leaderboard
+	globalLeaderboard.AddScore(entry)
+
+	// Return the entry with generated ID
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"entry":   entry,
+	})
+}
+
+func leaderboardHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get limit from query parameter (default: 10)
+	limitStr := r.URL.Query().Get("limit")
+	limit := 10
+	if limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
+	}
+
+	// Get top scores
+	topScores := globalLeaderboard.GetTopScores(limit)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"scores": topScores,
+		"total":  len(topScores),
+	})
+}
+
+func playerRankHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	playerID := r.URL.Query().Get("playerId")
+	if playerID == "" {
+		http.Error(w, "Player ID required", http.StatusBadRequest)
+		return
+	}
+
+	rank, entry := globalLeaderboard.GetPlayerRank(playerID)
+	if rank == -1 {
+		http.Error(w, "Player not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"rank":  rank,
+		"entry": entry,
+	})
+}
+
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats := globalLeaderboard.GetStats()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }

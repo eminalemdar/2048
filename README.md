@@ -1,6 +1,6 @@
 # 2048 Game
 
-A modern, responsive 2048 game built with React frontend and Go backend, featuring smooth animations, dark/light themes, and a professional menu system.
+A modern, responsive 2048 game built with React frontend and Go backend, featuring smooth animations, dark/light themes, leaderboard system, and persistent score storage.
 
 ## 🎮 Features
 
@@ -8,13 +8,16 @@ A modern, responsive 2048 game built with React frontend and Go backend, featuri
 - **Dark/Light theme** toggle
 - **Touch/swipe support** for mobile devices
 - **Menu system** with game options and instructions
-- **Score tracking** with persistent best score
+- **Global leaderboard** with persistent score storage
+- **Multiple storage backends** (DynamoDB, S3, JSON fallback)
+- **Score tracking** with game statistics (moves, duration)
 - **Responsive design** for all screen sizes
 
 ## 🏗️ Architecture
 
 - **Frontend**: React + Vite + Tailwind CSS
 - **Backend**: Go with RESTful API
+- **Database**: AWS DynamoDB (with S3 backup support)
 - **Containerized**: Docker & Docker Compose
 - **Kubernetes ready**: Production manifests included
 
@@ -32,16 +35,37 @@ docker-compose up --build
 open http://localhost:3000
 ```
 
-The game will be available at `http://localhost:3000` with the backend API running on port 8000.
+The game will be available at `http://localhost:3000` with:
+- Backend API on port 8000
+- DynamoDB Local on port 8001
+- Persistent leaderboard storage
 
-## ☸️ Kubernetes Deployment
+## ☁️ AWS Infrastructure Deployment
 
 ### Prerequisites
-- Kubernetes cluster
-- kubectl configured
-- NGINX Ingress Controller
+- [OpenTofu](https://opentofu.org/docs/intro/install/) installed
+- AWS CLI configured with appropriate credentials
+- kubectl installed
 
-### Deploy
+### Deploy Infrastructure
+```bash
+cd opentofu
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+tofu init
+tofu plan
+tofu apply
+```
+
+### Configure kubectl
+```bash
+# Use the output command from tofu apply
+aws eks --region eu-west-1 update-kubeconfig --name game2048-dev-cluster
+```
+
+## ☸️ Kubernetes Application Deployment
+
+### Deploy Application
 ```bash
 cd kubernetes
 ./deploy.sh
@@ -59,14 +83,31 @@ echo "<INGRESS_IP> 2048.local" >> /etc/hosts
 
 ### Cleanup
 ```bash
+# Remove Kubernetes resources
 kubectl delete namespace game-2048
+
+# Remove AWS infrastructure
+cd opentofu
+tofu destroy
 ```
 
-## 🎯 Game Controls
+## 🎯 Game Features
 
+### Controls
 - **Desktop**: Arrow keys to move tiles
 - **Mobile**: Swipe to move tiles
 - **Goal**: Reach the 2048 tile to win!
+
+### Leaderboard
+- **Submit scores** after each game
+- **Global rankings** with top 10 players
+- **Game statistics** (moves, duration, score)
+- **Persistent storage** across sessions
+
+### Storage Options
+- **DynamoDB**: Primary database for leaderboard (AWS managed NoSQL)
+- **S3 Backup**: Optional cloud backup (configure AWS credentials)
+- **JSON Fallback**: Local file storage if databases unavailable
 
 ## 🛠️ Development
 

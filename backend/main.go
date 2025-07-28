@@ -14,13 +14,26 @@ import (
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
+	// Initialize storage backends
+	initStorage()
+
+	// Initialize leaderboard
+	initLeaderboard()
+
 	// Start cleanup routine
 	go cleanupOldGames()
 
+	// Game endpoints
 	http.HandleFunc("/health", withCORS(healthHandler))
 	http.HandleFunc("/game/new", withCORS(newGameHandler))
 	http.HandleFunc("/game/move", withCORS(moveHandler))
 	http.HandleFunc("/game/state", withCORS(stateHandler))
+
+	// Leaderboard endpoints
+	http.HandleFunc("/leaderboard/submit", withCORS(submitScoreHandler))
+	http.HandleFunc("/leaderboard/top", withCORS(leaderboardHandler))
+	http.HandleFunc("/leaderboard/rank", withCORS(playerRankHandler))
+	http.HandleFunc("/leaderboard/stats", withCORS(statsHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -45,6 +58,9 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
+
+	// Cleanup storage connections
+	cleanupStorage()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
