@@ -170,6 +170,47 @@ module "eks_blueprints_addons" {
     ]
   }
 
+  # NGINX Ingress Controller
+  enable_ingress_nginx = true
+  ingress_nginx = {
+    chart_version = "4.8.3"
+    repository    = "https://kubernetes.github.io/ingress-nginx"
+    namespace     = "ingress-nginx"
+    values = [
+      yamlencode({
+        controller = {
+          service = {
+            type = "LoadBalancer"
+            annotations = {
+              "service.beta.kubernetes.io/aws-load-balancer-type"                              = "nlb"
+              "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+              "service.beta.kubernetes.io/aws-load-balancer-backend-protocol"                  = "tcp"
+            }
+          }
+          config = {
+            "use-proxy-protocol" = "true"
+          }
+          metrics = {
+            enabled = true
+            serviceMonitor = {
+              enabled = false
+            }
+          }
+          resources = {
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+            requests = {
+              cpu    = "250m"
+              memory = "256Mi"
+            }
+          }
+        }
+      })
+    ]
+  }
+
   tags = local.common_tags
 }
 # AWS Auth ConfigMap using dedicated module

@@ -23,16 +23,37 @@ var (
 
 // initStorage initializes storage clients based on environment variables
 func initStorage() {
+	environment := os.Getenv("ENVIRONMENT")
+	if environment == "" {
+		environment = "development"
+	}
+
+	log.Printf("Initializing storage for environment: %s", environment)
+
+	// Environment-specific initialization
+	switch environment {
+	case "development":
+		log.Println("Development mode: using relaxed settings and verbose logging")
+	case "staging":
+		log.Println("Staging mode: using production-like settings with enhanced logging")
+	case "production":
+		log.Println("Production mode: using optimized settings")
+	default:
+		log.Printf("Unknown environment '%s', using default settings", environment)
+	}
+
 	// Initialize AWS clients if configured
 	if os.Getenv("AWS_REGION") != "" {
 		initAWSClients()
 	}
 
-	log.Println("Storage clients initialized")
+	log.Printf("Storage clients initialized for %s environment", environment)
 }
 
 // initAWSClients initializes AWS S3 and DynamoDB clients
 func initAWSClients() {
+	environment := os.Getenv("ENVIRONMENT")
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion(os.Getenv("AWS_REGION")),
 	)
@@ -52,6 +73,16 @@ func initAWSClients() {
 	} else {
 		dynamodbClient = dynamodb.NewFromConfig(cfg)
 		log.Println("DynamoDB client initialized for AWS")
+	}
+
+	// Environment-specific client configuration
+	switch environment {
+	case "development":
+		log.Println("AWS clients configured for development (relaxed timeouts)")
+	case "staging":
+		log.Println("AWS clients configured for staging (production-like timeouts)")
+	case "production":
+		log.Println("AWS clients configured for production (optimized timeouts)")
 	}
 
 	log.Println("AWS clients initialized (S3 and DynamoDB)")

@@ -1,0 +1,149 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: dynamodb-table
+  namespace: kro
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: DynamoDBTable
+    spec:
+      # Table configuration
+      tableName:
+        type: string
+        description: "Name of the DynamoDB table"
+        default: "game2048-leaderboard"
+
+      region:
+        type: string
+        description: "AWS region for the DynamoDB table"
+        default: "eu-west-1"
+
+      billingMode:
+        type: string
+        description: "Billing mode for the table"
+        default: "PAY_PER_REQUEST"
+        enum: ["PROVISIONED", "PAY_PER_REQUEST"]
+
+      # Optional provisioned throughput (only used if billingMode is PROVISIONED)
+      readCapacityUnits:
+        type: integer
+        description: "Read capacity units (only for PROVISIONED billing)"
+        default: 5
+
+      writeCapacityUnits:
+        type: integer
+        description: "Write capacity units (only for PROVISIONED billing)"
+        default: 5
+
+      # Security and backup settings
+      pointInTimeRecovery:
+        type: boolean
+        description: "Enable point-in-time recovery"
+        default: true
+
+      serverSideEncryption:
+        type: boolean
+        description: "Enable server-side encryption"
+        default: true
+
+      # Tags
+      tags:
+        type: object
+        description: "Tags to apply to the DynamoDB table"
+        default:
+          Project: "game2048"
+          ManagedBy: "KRO"
+
+    status:
+      tableArn:
+        type: string
+        description: "ARN of the created DynamoDB table"
+
+      tableStatus:
+        type: string
+        description: "Current status of the DynamoDB table"
+
+      creationDateTime:
+        type: string
+        description: "Creation timestamp of the table"
+
+  resources:
+    # DynamoDB Table using ACK DynamoDB Controller
+    - id: dynamodb-table
+      template:
+        apiVersion: dynamodb.services.k8s.aws/v1alpha1
+        kind: Table
+        metadata:
+          name: "{{ .spec.tableName }}"
+          namespace: "{{ .metadata.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.tableName }}"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        spec:
+          tableName: "{{ .spec.tableName }}"
+          keySchema:
+            - attributeName: id
+              keyType: HASH
+          attributeDefinitions:
+            - attributeName: id
+              attributeType: S
+            - attributeName: score
+              attributeType: N
+            - attributeName: timestamp
+              attributeType: S
+          globalSecondaryIndexes:
+            - indexName: ScoreIndex
+              keySchema:
+                - attributeName: score
+                  keyType: HASH
+                - attributeName: timestamp
+                  keyType: RANGE
+              projection:
+                projectionType: ALL
+          billingMode: "{{ .spec.billingMode }}"
+          tags:
+            - key: Project
+              value: "{{ .spec.tags.Project }}"
+            - key: ManagedBy
+              value: "{{ .spec.tags.ManagedBy }}"
+            - key: Region
+              value: "{{ .spec.region }}"
+            - key: CreatedBy
+              value: KRO-ResourceGraphDefinition
+
+    # ConfigMap with table information for applications
+    - id: table-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: "{{ .spec.tableName }}-config"
+          namespace: "{{ .metadata.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.tableName }}-config"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        data:
+          DYNAMODB_TABLE: "{{ .spec.tableName }}"
+          AWS_REGION: "{{ .spec.region }}"
+          BILLING_MODE: "{{ .spec.billingMode }}"
+          POINT_IN_TIME_RECOVERY: "{{ .spec.pointInTimeRecovery }}"
+          SERVER_SIDE_ENCRYPTION: "{{ .spec.serverSideEncryption }}"
+
+    # Service Account with IAM role for DynamoDB access
+    - id: service-account
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: "{{ .spec.tableName }}-sa"
+          namespace: "{{ .metadata.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.tableName }}-sa"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+          annotations:
+            eks.amazonaws.com/role-arn: "arn:aws:iam::{{ .metadata.annotations.aws-account-id }}:role/{{ .spec.tableName }}-role"
+        automountServiceAccountToken: true

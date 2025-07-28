@@ -1,0 +1,127 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: s3-backup-bucket
+  namespace: kro
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: S3BackupBucket
+    spec:
+      # Bucket configuration
+      bucketName:
+        type: string
+        description: "Name of the S3 bucket (must be globally unique)"
+      
+      region:
+        type: string
+        description: "AWS region for the S3 bucket"
+        default: "eu-west-1"
+      
+      # Versioning configuration
+      versioning:
+        type: boolean
+        description: "Enable versioning on the bucket"
+        default: true
+      
+      # Encryption configuration
+      encryption:
+        type: boolean
+        description: "Enable server-side encryption"
+        default: true
+      
+      # Public access block (security)
+      blockPublicAccess:
+        type: boolean
+        description: "Block all public access to the bucket"
+        default: true
+      
+      # Tags
+      tags:
+        type: object
+        description: "Tags to apply to the S3 bucket"
+        default:
+          Project: "game2048"
+          Purpose: "leaderboard-backup"
+          ManagedBy: "KRO"
+    
+    status:
+      bucketArn:
+        type: string
+        description: "ARN of the created S3 bucket"
+      
+      bucketDomainName:
+        type: string
+        description: "Domain name of the S3 bucket"
+      
+      region:
+        type: string
+        description: "Region where the bucket was created"
+
+  resources:
+    # S3 Bucket using ACK S3 Controller
+    - id: s3-bucket
+      template:
+        apiVersion: s3.services.k8s.aws/v1alpha1
+        kind: Bucket
+        metadata:
+          name: "{{ .spec.bucketName }}"
+          namespace: "{{ .metadata.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.bucketName }}"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        spec:
+          name: "{{ .spec.bucketName }}"
+          publicAccessBlock:
+            blockPublicAcls: true
+            blockPublicPolicy: true
+            ignorePublicAcls: true
+            restrictPublicBuckets: true
+          tagging:
+            tagSet:
+              - key: Project
+                value: "{{ .spec.tags.Project }}"
+              - key: Purpose
+                value: "{{ .spec.tags.Purpose }}"
+              - key: ManagedBy
+                value: "{{ .spec.tags.ManagedBy }}"
+              - key: Region
+                value: "{{ .spec.region }}"
+              - key: CreatedBy
+                value: KRO-ResourceGraphDefinition
+
+    # ConfigMap with bucket information for applications
+    - id: bucket-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: "{{ .spec.bucketName }}-config"
+          namespace: "{{ .metadata.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.bucketName }}-config"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        data:
+          S3_BUCKET: "{{ .spec.bucketName }}"
+          AWS_REGION: "{{ .spec.region }}"
+          VERSIONING_ENABLED: "{{ .spec.versioning }}"
+          ENCRYPTION_ENABLED: "{{ .spec.encryption }}"
+          BLOCK_PUBLIC_ACCESS: "{{ .spec.blockPublicAccess }}"
+
+    # Service Account with IAM role for S3 access
+    - id: service-account
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: "{{ .spec.bucketName }}-sa"
+          namespace: "{{ .metadata.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.bucketName }}-sa"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+          annotations:
+            eks.amazonaws.com/role-arn: "arn:aws:iam::{{ .metadata.annotations.aws-account-id }}:role/{{ .spec.bucketName }}-role"
+        automountServiceAccountToken: true

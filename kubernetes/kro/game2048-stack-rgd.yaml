@@ -1,0 +1,657 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: game2048-complete-stack
+  namespace: kro
+  annotations:
+    aws-account-id: "123456789012" # Replace with your AWS account ID
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: Game2048Stack
+    spec:
+      # Environment configuration
+      environment:
+        type: string
+        description: "Environment name (dev, staging, prod)"
+        default: "dev"
+
+      # AWS configuration
+      region:
+        type: string
+        description: "AWS region"
+        default: "eu-west-1"
+
+      # DynamoDB configuration
+      dynamodb:
+        type: object
+        description: "DynamoDB table configuration"
+        default:
+          tableName: "game2048-leaderboard"
+          billingMode: "PAY_PER_REQUEST"
+          pointInTimeRecovery: true
+          serverSideEncryption: true
+        properties:
+          tableName:
+            type: string
+            default: "game2048-leaderboard"
+          billingMode:
+            type: string
+            default: "PAY_PER_REQUEST"
+            enum: ["PROVISIONED", "PAY_PER_REQUEST"]
+          readCapacityUnits:
+            type: integer
+            description: "Read capacity units (only for PROVISIONED billing)"
+            default: 5
+          writeCapacityUnits:
+            type: integer
+            description: "Write capacity units (only for PROVISIONED billing)"
+            default: 5
+          pointInTimeRecovery:
+            type: boolean
+            default: true
+          serverSideEncryption:
+            type: boolean
+            default: true
+
+      # S3 configuration
+      s3:
+        type: object
+        description: "S3 backup bucket configuration"
+        default:
+          enabled: true
+          bucketName: ""
+          versioning: true
+          encryption: true
+          blockPublicAccess: true
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          bucketName:
+            type: string
+            description: "S3 bucket name (will be auto-generated if empty)"
+          versioning:
+            type: boolean
+            default: true
+          encryption:
+            type: boolean
+            default: true
+          blockPublicAccess:
+            type: boolean
+            default: true
+          lifecycleEnabled:
+            type: boolean
+            description: "Enable lifecycle policies for cost optimization"
+            default: true
+          transitionToIA:
+            type: integer
+            description: "Days to transition to Infrequent Access"
+            default: 30
+          transitionToGlacier:
+            type: integer
+            description: "Days to transition to Glacier"
+            default: 90
+          expiration:
+            type: integer
+            description: "Days to expire objects"
+            default: 365
+
+      # Application configuration
+      application:
+        type: object
+        description: "Application deployment configuration"
+        default:
+          namespace: "game-2048"
+          backend:
+            image: "2048-backend:latest"
+            replicas: 3
+            port: 8000
+          frontend:
+            image: "2048-frontend:latest"
+            replicas: 3
+            port: 80
+          ingress:
+            enabled: true
+            hostname: "2048.local"
+            ingressClass: "nginx"
+          autoscaling:
+            enabled: true
+            minReplicas: 2
+            maxReplicas: 10
+            targetCPU: 70
+        properties:
+          namespace:
+            type: string
+            default: "game-2048"
+          backend:
+            type: object
+            properties:
+              image:
+                type: string
+                default: "2048-backend:latest"
+              replicas:
+                type: integer
+                default: 3
+              port:
+                type: integer
+                default: 8000
+          frontend:
+            type: object
+            properties:
+              image:
+                type: string
+                default: "2048-frontend:latest"
+              replicas:
+                type: integer
+                default: 3
+              port:
+                type: integer
+                default: 80
+          ingress:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              hostname:
+                type: string
+                default: "2048.local"
+              ingressClass:
+                type: string
+                default: "nginx"
+          autoscaling:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              minReplicas:
+                type: integer
+                default: 2
+              maxReplicas:
+                type: integer
+                default: 10
+              targetCPU:
+                type: integer
+                default: 70
+
+    status:
+      phase:
+        type: string
+        description: "Current phase of the stack deployment"
+
+      dynamodbReady:
+        type: boolean
+        description: "DynamoDB table readiness"
+
+      s3Ready:
+        type: boolean
+        description: "S3 bucket readiness"
+
+      applicationReady:
+        type: boolean
+        description: "Application readiness"
+
+  resources:
+    # Namespace
+    - id: namespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+
+    # DynamoDB Table
+    - id: dynamodb-table
+      template:
+        apiVersion: dynamodb.services.k8s.aws/v1alpha1
+        kind: Table
+        metadata:
+          name: "{{ .spec.dynamodb.tableName }}"
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.dynamodb.tableName }}"
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          tableName: "{{ .spec.dynamodb.tableName }}"
+          keySchema:
+            - attributeName: id
+              keyType: HASH
+          attributeDefinitions:
+            - attributeName: id
+              attributeType: S
+            - attributeName: score
+              attributeType: N
+            - attributeName: timestamp
+              attributeType: S
+          globalSecondaryIndexes:
+            - indexName: ScoreIndex
+              keySchema:
+                - attributeName: score
+                  keyType: HASH
+                - attributeName: timestamp
+                  keyType: RANGE
+              projection:
+                projectionType: ALL
+          billingMode: "{{ .spec.dynamodb.billingMode }}"
+          tags:
+            - key: Project
+              value: game2048
+            - key: Environment
+              value: "{{ .spec.environment }}"
+            - key: Region
+              value: "{{ .spec.region }}"
+            - key: ManagedBy
+              value: KRO
+            - key: Component
+              value: database
+
+    # S3 Bucket
+    - id: s3-bucket
+      template:
+        apiVersion: s3.services.k8s.aws/v1alpha1
+        kind: Bucket
+        metadata:
+          name: "game2048-backup-{{ .spec.environment }}-{{ .metadata.name }}"
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-backup
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          name: "game2048-backup-{{ .spec.environment }}-{{ .metadata.name }}"
+          publicAccessBlock:
+            blockPublicAcls: "{{ .spec.s3.blockPublicAccess }}"
+            blockPublicPolicy: "{{ .spec.s3.blockPublicAccess }}"
+            ignorePublicAcls: "{{ .spec.s3.blockPublicAccess }}"
+            restrictPublicBuckets: "{{ .spec.s3.blockPublicAccess }}"
+          tagging:
+            tagSet:
+              - key: Project
+                value: game2048
+              - key: Environment
+                value: "{{ .spec.environment }}"
+              - key: Region
+                value: "{{ .spec.region }}"
+              - key: Purpose
+                value: leaderboard-backup
+              - key: ManagedBy
+                value: KRO
+
+    # DynamoDB Service Account
+    - id: dynamodb-service-account
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: "{{ .spec.dynamodb.tableName }}-sa"
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.dynamodb.tableName }}-sa"
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+          annotations:
+            eks.amazonaws.com/role-arn: "arn:aws:iam::{{ .metadata.annotations.aws-account-id }}:role/{{ .spec.dynamodb.tableName }}-role"
+        automountServiceAccountToken: true
+
+    # S3 Service Account
+    - id: s3-service-account
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: "game2048-s3-{{ .spec.environment }}-sa"
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: "game2048-s3-{{ .spec.environment }}-sa"
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+          annotations:
+            eks.amazonaws.com/role-arn: "arn:aws:iam::{{ .metadata.annotations.aws-account-id }}:role/game2048-s3-{{ .spec.environment }}-role"
+        automountServiceAccountToken: true
+
+    # DynamoDB ConfigMap
+    - id: dynamodb-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: "{{ .spec.dynamodb.tableName }}-config"
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.dynamodb.tableName }}-config"
+            app.kubernetes.io/managed-by: kro
+            app.kubernetes.io/component: database
+            environment: "{{ .spec.environment }}"
+        data:
+          DYNAMODB_TABLE: "{{ .spec.dynamodb.tableName }}"
+          AWS_REGION: "{{ .spec.region }}"
+          BILLING_MODE: "{{ .spec.dynamodb.billingMode }}"
+          POINT_IN_TIME_RECOVERY: "{{ .spec.dynamodb.pointInTimeRecovery }}"
+          SERVER_SIDE_ENCRYPTION: "{{ .spec.dynamodb.serverSideEncryption }}"
+          READ_CAPACITY_UNITS: "{{ .spec.dynamodb.readCapacityUnits }}"
+          WRITE_CAPACITY_UNITS: "{{ .spec.dynamodb.writeCapacityUnits }}"
+
+    # S3 ConfigMap
+    - id: s3-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: "game2048-s3-{{ .spec.environment }}-config"
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: "game2048-s3-{{ .spec.environment }}-config"
+            app.kubernetes.io/managed-by: kro
+            app.kubernetes.io/component: storage
+            environment: "{{ .spec.environment }}"
+        data:
+          S3_BUCKET: "game2048-backup-{{ .spec.environment }}-{{ .metadata.name }}"
+          AWS_REGION: "{{ .spec.region }}"
+          VERSIONING_ENABLED: "{{ .spec.s3.versioning }}"
+          ENCRYPTION_ENABLED: "{{ .spec.s3.encryption }}"
+          BLOCK_PUBLIC_ACCESS: "{{ .spec.s3.blockPublicAccess }}"
+          LIFECYCLE_ENABLED: "{{ .spec.s3.lifecycleEnabled }}"
+          TRANSITION_TO_IA: "{{ .spec.s3.transitionToIA }}"
+          TRANSITION_TO_GLACIER: "{{ .spec.s3.transitionToGlacier }}"
+          EXPIRATION_DAYS: "{{ .spec.s3.expiration }}"
+
+    # Backend ConfigMap (only what the Go backend actually uses)
+    - id: backend-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: game2048-backend-config
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-backend-config
+            app.kubernetes.io/managed-by: kro
+            app.kubernetes.io/component: backend
+            environment: "{{ .spec.environment }}"
+        data:
+          # Required by Go backend
+          PORT: "{{ .spec.application.backend.port }}"
+          AWS_REGION: "{{ .spec.region }}"
+          DYNAMODB_TABLE: "{{ .spec.dynamodb.tableName }}"
+          S3_BUCKET: "game2048-backup-{{ .spec.environment }}-{{ .metadata.name }}"
+
+          # Control variables for backend logic
+          S3_ENABLED: "{{ .spec.s3.enabled }}"
+          ENVIRONMENT: "{{ .spec.environment }}"
+
+    # Frontend ConfigMap (for React app)
+    - id: frontend-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: game2048-frontend-config
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-frontend-config
+            app.kubernetes.io/managed-by: kro
+            app.kubernetes.io/component: frontend
+            environment: "{{ .spec.environment }}"
+        data:
+          # Frontend API endpoint
+          VITE_API: "http://game2048-backend-service:{{ .spec.application.backend.port }}"
+          ENVIRONMENT: "{{ .spec.environment }}"
+
+    # Backend Deployment
+    - id: backend-deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: game2048-backend
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-backend
+            app.kubernetes.io/component: backend
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          replicas: "{{ .spec.application.backend.replicas }}"
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: game2048-backend
+              app.kubernetes.io/component: backend
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: game2048-backend
+                app.kubernetes.io/component: backend
+                environment: "{{ .spec.environment }}"
+            spec:
+              serviceAccountName: "{{ .spec.dynamodb.tableName }}-sa"
+              containers:
+                - name: backend
+                  image: "{{ .spec.application.backend.image }}"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: "{{ .spec.application.backend.port }}"
+                      name: http
+                  envFrom:
+                    - configMapRef:
+                        name: game2048-backend-config
+                  resources:
+                    requests:
+                      memory: 64Mi
+                      cpu: 50m
+                    limits:
+                      memory: 128Mi
+                      cpu: 100m
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: "{{ .spec.application.backend.port }}"
+                    initialDelaySeconds: 10
+                    periodSeconds: 30
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: "{{ .spec.application.backend.port }}"
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
+
+    # Backend Service
+    - id: backend-service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: game2048-backend-service
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-backend-service
+            app.kubernetes.io/component: backend
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          type: ClusterIP
+          ports:
+            - port: "{{ .spec.application.backend.port }}"
+              targetPort: "{{ .spec.application.backend.port }}"
+              protocol: TCP
+              name: http
+          selector:
+            app.kubernetes.io/name: game2048-backend
+            app.kubernetes.io/component: backend
+
+    # Frontend Deployment
+    - id: frontend-deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: game2048-frontend
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-frontend
+            app.kubernetes.io/component: frontend
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          replicas: "{{ .spec.application.frontend.replicas }}"
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: game2048-frontend
+              app.kubernetes.io/component: frontend
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: game2048-frontend
+                app.kubernetes.io/component: frontend
+                environment: "{{ .spec.environment }}"
+            spec:
+              containers:
+                - name: frontend
+                  image: "{{ .spec.application.frontend.image }}"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: "{{ .spec.application.frontend.port }}"
+                      name: http
+                  envFrom:
+                    - configMapRef:
+                        name: game2048-frontend-config
+                  resources:
+                    requests:
+                      memory: 32Mi
+                      cpu: 25m
+                    limits:
+                      memory: 64Mi
+                      cpu: 50m
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: "{{ .spec.application.frontend.port }}"
+                    initialDelaySeconds: 10
+                    periodSeconds: 30
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: "{{ .spec.application.frontend.port }}"
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
+
+    # Frontend Service
+    - id: frontend-service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: game2048-frontend-service
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-frontend-service
+            app.kubernetes.io/component: frontend
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          type: ClusterIP
+          ports:
+            - port: "{{ .spec.application.frontend.port }}"
+              targetPort: "{{ .spec.application.frontend.port }}"
+              protocol: TCP
+              name: http
+          selector:
+            app.kubernetes.io/name: game2048-frontend
+            app.kubernetes.io/component: frontend
+
+    # Ingress
+    - id: ingress
+      template:
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: game2048-ingress
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-ingress
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+          annotations:
+            kubernetes.io/ingress.class: "{{ .spec.application.ingress.ingressClass }}"
+            nginx.ingress.kubernetes.io/rewrite-target: /
+        spec:
+          rules:
+            - host: "{{ .spec.application.ingress.hostname }}"
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: game2048-frontend-service
+                        port:
+                          number: "{{ .spec.application.frontend.port }}"
+                  - path: /api
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: game2048-backend-service
+                        port:
+                          number: "{{ .spec.application.backend.port }}"
+
+    # HPA for Backend
+    - id: backend-hpa
+      template:
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        metadata:
+          name: game2048-backend-hpa
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-backend-hpa
+            app.kubernetes.io/component: backend
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: game2048-backend
+          minReplicas: "{{ .spec.application.autoscaling.minReplicas }}"
+          maxReplicas: "{{ .spec.application.autoscaling.maxReplicas }}"
+          metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: "{{ .spec.application.autoscaling.targetCPU }}"
+
+    # HPA for Frontend
+    - id: frontend-hpa
+      template:
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        metadata:
+          name: game2048-frontend-hpa
+          namespace: "{{ .spec.application.namespace }}"
+          labels:
+            app.kubernetes.io/name: game2048-frontend-hpa
+            app.kubernetes.io/component: frontend
+            app.kubernetes.io/managed-by: kro
+            environment: "{{ .spec.environment }}"
+        spec:
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: game2048-frontend
+          minReplicas: "{{ .spec.application.autoscaling.minReplicas }}"
+          maxReplicas: "{{ .spec.application.autoscaling.maxReplicas }}"
+          metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: "{{ .spec.application.autoscaling.targetCPU }}"

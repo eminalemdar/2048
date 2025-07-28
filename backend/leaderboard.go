@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -138,8 +139,8 @@ func (l *Leaderboard) saveToPersistentStorage() {
 		l.saveToDynamoDB()
 	}
 
-	// If S3 is configured, also save there (backup)
-	if s3Client != nil {
+	// Only use S3 if explicitly enabled and configured
+	if os.Getenv("S3_ENABLED") == "true" && s3Client != nil {
 		l.saveToS3()
 	}
 

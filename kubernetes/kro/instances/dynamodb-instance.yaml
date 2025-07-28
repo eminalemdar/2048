@@ -1,0 +1,18 @@
+apiVersion: kro.run/v1alpha1
+kind: DynamoDBTable
+metadata:
+  name: game2048-leaderboard-table
+  namespace: game-2048
+  annotations:
+    aws-account-id: "123456789012"  # Replace with your AWS account ID
+spec:
+  tableName: "game2048-leaderboard"
+  region: "eu-west-1"
+  billingMode: "PAY_PER_REQUEST"
+  pointInTimeRecovery: true
+  serverSideEncryption: true
+  tags:
+    Project: "game2048"
+    Environment: "production"
+    ManagedBy: "KRO"
+    Component: "database"

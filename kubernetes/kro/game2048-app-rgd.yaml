@@ -1,0 +1,361 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: game2048-application
+  namespace: kro
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: Game2048Application
+    spec:
+      # Application configuration
+      name:
+        type: string
+        description: "Name of the application"
+        default: "game2048"
+
+      namespace:
+        type: string
+        description: "Kubernetes namespace for the application"
+        default: "game-2048"
+
+      # Image configuration
+      backend:
+        type: object
+        description: "Backend service configuration"
+        default:
+          image: "2048-backend:latest"
+          replicas: 2
+          port: 8000
+        properties:
+          image:
+            type: string
+            default: "2048-backend:latest"
+          replicas:
+            type: integer
+            default: 2
+          port:
+            type: integer
+            default: 8000
+
+      frontend:
+        type: object
+        description: "Frontend service configuration"
+        default:
+          image: "2048-frontend:latest"
+          replicas: 2
+          port: 80
+        properties:
+          image:
+            type: string
+            default: "2048-frontend:latest"
+          replicas:
+            type: integer
+            default: 2
+          port:
+            type: integer
+            default: 80
+
+      # AWS resources
+      dynamodb:
+        type: object
+        description: "DynamoDB configuration"
+        default:
+          tableName: "game2048-leaderboard"
+          region: "eu-west-1"
+        properties:
+          tableName:
+            type: string
+            default: "game2048-leaderboard"
+          region:
+            type: string
+            default: "eu-west-1"
+
+      s3:
+        type: object
+        description: "S3 backup configuration"
+        default:
+          bucketName: ""
+          region: "eu-west-1"
+          enabled: false
+        properties:
+          bucketName:
+            type: string
+            description: "S3 bucket name (leave empty to disable)"
+          region:
+            type: string
+            default: "eu-west-1"
+          enabled:
+            type: boolean
+            default: false
+
+      # Ingress configuration
+      ingress:
+        type: object
+        description: "Ingress configuration"
+        default:
+          enabled: true
+          hostname: "2048.local"
+          ingressClass: "nginx"
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          hostname:
+            type: string
+            default: "2048.local"
+          ingressClass:
+            type: string
+            default: "nginx"
+
+    status:
+      phase:
+        type: string
+        description: "Current phase of the application"
+
+      backendReady:
+        type: boolean
+        description: "Backend deployment readiness"
+
+      frontendReady:
+        type: boolean
+        description: "Frontend deployment readiness"
+
+      ingressReady:
+        type: boolean
+        description: "Ingress readiness"
+
+  resources:
+    # Namespace
+    - id: namespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+
+    # ConfigMap for application configuration
+    - id: app-config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: "{{ .spec.name }}-config"
+          namespace: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        data:
+          PORT: "{{ .spec.backend.port }}"
+          DYNAMODB_TABLE: "{{ .spec.dynamodb.tableName }}"
+          AWS_REGION: "{{ .spec.dynamodb.region }}"
+          VITE_API: "http://{{ .spec.name }}-backend-service:{{ .spec.backend.port }}"
+
+    # Backend Deployment
+    - id: backend-deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: "{{ .spec.name }}-backend"
+          namespace: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}-backend"
+            app.kubernetes.io/component: backend
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        spec:
+          replicas: "{{ .spec.backend.replicas }}"
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ .spec.name }}-backend"
+              app.kubernetes.io/component: backend
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: "{{ .spec.name }}-backend"
+                app.kubernetes.io/component: backend
+            spec:
+              serviceAccountName: "{{ .spec.dynamodb.tableName }}-sa"
+              containers:
+                - name: backend
+                  image: "{{ .spec.backend.image }}"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: "{{ .spec.backend.port }}"
+                      name: http
+                  envFrom:
+                    - configMapRef:
+                        name: "{{ .spec.name }}-config"
+                  resources:
+                    requests:
+                      memory: "64Mi"
+                      cpu: "50m"
+                    limits:
+                      memory: "128Mi"
+                      cpu: "100m"
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: "{{ .spec.backend.port }}"
+                    initialDelaySeconds: 10
+                    periodSeconds: 30
+                    timeoutSeconds: 5
+                    failureThreshold: 3
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: "{{ .spec.backend.port }}"
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
+                    timeoutSeconds: 3
+                    failureThreshold: 2
+              restartPolicy: Always
+
+    # Backend Service
+    - id: backend-service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: "{{ .spec.name }}-backend-service"
+          namespace: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}-backend-service"
+            app.kubernetes.io/component: backend
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        spec:
+          type: ClusterIP
+          ports:
+            - port: "{{ .spec.backend.port }}"
+              targetPort: "{{ .spec.backend.port }}"
+              protocol: TCP
+              name: http
+          selector:
+            app.kubernetes.io/name: "{{ .spec.name }}-backend"
+            app.kubernetes.io/component: backend
+
+    # Frontend Deployment
+    - id: frontend-deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: "{{ .spec.name }}-frontend"
+          namespace: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}-frontend"
+            app.kubernetes.io/component: frontend
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        spec:
+          replicas: "{{ .spec.frontend.replicas }}"
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: "{{ .spec.name }}-frontend"
+              app.kubernetes.io/component: frontend
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: "{{ .spec.name }}-frontend"
+                app.kubernetes.io/component: frontend
+            spec:
+              containers:
+                - name: frontend
+                  image: "{{ .spec.frontend.image }}"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: "{{ .spec.frontend.port }}"
+                      name: http
+                  envFrom:
+                    - configMapRef:
+                        name: "{{ .spec.name }}-config"
+                  resources:
+                    requests:
+                      memory: "32Mi"
+                      cpu: "25m"
+                    limits:
+                      memory: "64Mi"
+                      cpu: "50m"
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: "{{ .spec.frontend.port }}"
+                    initialDelaySeconds: 10
+                    periodSeconds: 30
+                    timeoutSeconds: 5
+                    failureThreshold: 3
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: "{{ .spec.frontend.port }}"
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
+                    timeoutSeconds: 3
+                    failureThreshold: 2
+              restartPolicy: Always
+
+    # Frontend Service
+    - id: frontend-service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: "{{ .spec.name }}-frontend-service"
+          namespace: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}-frontend-service"
+            app.kubernetes.io/component: frontend
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+        spec:
+          type: ClusterIP
+          ports:
+            - port: "{{ .spec.frontend.port }}"
+              targetPort: "{{ .spec.frontend.port }}"
+              protocol: TCP
+              name: http
+          selector:
+            app.kubernetes.io/name: "{{ .spec.name }}-frontend"
+            app.kubernetes.io/component: frontend
+
+    # Ingress
+    - id: ingress
+      template:
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: "{{ .spec.name }}-ingress"
+          namespace: "{{ .spec.namespace }}"
+          labels:
+            app.kubernetes.io/name: "{{ .spec.name }}-ingress"
+            app.kubernetes.io/managed-by: kro
+            kro.run/resource-graph: "{{ .metadata.name }}"
+          annotations:
+            kubernetes.io/ingress.class: "{{ .spec.ingress.ingressClass }}"
+            nginx.ingress.kubernetes.io/rewrite-target: /
+        spec:
+          rules:
+            - host: "{{ .spec.ingress.hostname }}"
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: "{{ .spec.name }}-frontend-service"
+                        port:
+                          number: "{{ .spec.frontend.port }}"
+                  - path: /api
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: "{{ .spec.name }}-backend-service"
+                        port:
+                          number: "{{ .spec.backend.port }}"

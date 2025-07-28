@@ -1,0 +1,25 @@
+apiVersion: kro.run/v1alpha1
+kind: S3BackupBucket
+metadata:
+  name: game2048-backup-bucket
+  namespace: game-2048
+  annotations:
+    aws-account-id: "123456789012"  # Replace with your AWS account ID
+spec:
+  bucketName: "game2048-leaderboard-backup-unique-suffix"  # Must be globally unique
+  region: "eu-west-1"
+  versioning: true
+  encryption:
+    enabled: true
+    algorithm: "AES256"
+  lifecycle:
+    enabled: true
+    transitionToIA: 30
+    transitionToGlacier: 90
+    expiration: 365
+  blockPublicAccess: true
+  tags:
+    Project: "game2048"
+    Environment: "production"
+    Purpose: "leaderboard-backup"
+    ManagedBy: "KRO"
