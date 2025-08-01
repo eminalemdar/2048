@@ -51,6 +51,7 @@ This guide provides step-by-step instructions for deploying the 2048 game applic
 ### Deployment Architecture
 
 The application uses the following components:
+
 - **EKS Cluster**: Managed Kubernetes cluster on AWS
 - **KRO**: Kubernetes Resource Operator for resource composition
 - **ACK Controllers**: AWS Controllers for Kubernetes (IAM, DynamoDB, S3)
@@ -75,6 +76,7 @@ Deploy the underlying AWS infrastructure (EKS cluster, VPC, IAM roles) using Ope
 ```
 
 This script will:
+
 - Initialize OpenTofu configuration
 - Deploy EKS cluster with necessary networking
 - Set up IAM roles and policies
@@ -118,42 +120,56 @@ Install the Kubernetes Resource Operator for simplified resource management:
 
 KRO provides a higher-level abstraction for managing complex Kubernetes resource compositions.
 
-### Step 4: Deploy Resource Graph Definitions (RGDs)
+### Step 4: Deploy KRO Application
 
-Deploy the KRO resource definitions that define how to create and manage application resources:
+#### Option A: Automated Deployment (Recommended)
+
+Use the automated deployment script that handles proper ordering and waits for resources:
 
 ```bash
-# Deploy all RGDs
+# Deploy everything with proper dependency management
+./scripts/deploy_kro_application.sh
+```
+
+This script will:
+
+- Deploy all ResourceGraphDefinitions (IAM, DynamoDB, Game Sessions, S3, Application) and wait for them to be active
+- Deploy application instances in the correct dependency order (S3 bucket → DynamoDB tables → IAM role → Application)
+- Wait for each resource to be ready before proceeding
+- Verify the deployment with comprehensive health checks (pod readiness, ALB health)
+- Provide access information and monitoring commands
+
+#### Option B: Manual Deployment
+
+Deploy resources manually if you prefer step-by-step control:
+
+```bash
+# Step 4a: Deploy ResourceGraphDefinitions
 kubectl apply -f kubernetes/kro/iam-rgd.yaml
 kubectl apply -f kubernetes/kro/dynamodb-rgd.yaml
 kubectl apply -f kubernetes/kro/game-sessions-rgd.yaml
+kubectl apply -f kubernetes/kro/s3-rgd.yaml
 kubectl apply -f kubernetes/kro/game2048-app-rgd.yaml
 
-# Verify RGDs are active
+# Wait for RGDs to be active
 kubectl get rgd -n kro
-```
+# All should show STATE: Active
 
-### Step 5: Deploy Application Instances
-
-Deploy the actual application instances using the RGDs:
-
-```bash
-# Deploy DynamoDB tables
+# Step 4b: Deploy Application Instances
+kubectl apply -f kubernetes/kro/instances/s3-instance.yaml
 kubectl apply -f kubernetes/kro/instances/game2048-leaderboard-table.yaml
 kubectl apply -f kubernetes/kro/instances/game2048-sessions-table.yaml
-
-# Deploy IAM role for backend
 kubectl apply -f kubernetes/kro/instances/game2048-backend-iam-role.yaml
-
-# Deploy the application
 kubectl apply -f kubernetes/kro/instances/game2048-app-instance.yaml
 
 # Check deployment status
 kubectl get pods -n game-2048
+kubectl get table -n kro
+kubectl get bucket -n kro
 kubectl get ingress -n game-2048
 ```
 
-### Step 6: Access the Application
+### Step 5: Access the Application
 
 Once deployed, access the application via the ALB ingress:
 
@@ -164,12 +180,14 @@ kubectl get ingress game2048-ingress -n game-2048 -o jsonpath='{.status.loadBala
 # The game will be available at: http://<ALB-URL>
 ```
 
-### 🎉 Installation Complete!
+### 🎉 Installation Complete
 
 Your 2048 game application is now deployed with:
+
 - ✅ **Scalable backend** (2 replicas with auto-scaling)
 - ✅ **Responsive frontend** (2 replicas with load balancing)
 - ✅ **Persistent leaderboard** (DynamoDB with automatic backups)
+- ✅ **Backup storage** (S3 bucket for data archival)
 - ✅ **Secure access** (IAM roles with least privilege)
 - ✅ **High availability** (Multi-AZ deployment)
 
@@ -180,6 +198,11 @@ Verify the deployment is working:
 ```bash
 # Check all pods are running
 kubectl get pods -n game-2048
+
+# Check AWS resources
+kubectl get table -n kro          # DynamoDB tables
+kubectl get bucket -n kro         # S3 buckets
+kubectl get role.iam.services.k8s.aws -A  # IAM roles
 
 # Test the backend health endpoint
 curl http://<ALB-URL>/health
@@ -275,6 +298,7 @@ kubectl get all -n game-2048
 - **Environment consistency** - Same definitions, different configurations
 - **Resource composition** - Manage related resources as a single unit
 - **Status tracking** - Built-in monitoring of resource creation and health
+- **Status tracking** - Built-in monitoring of resource creation and health
 
 See [kubernetes/kro/README.md](kubernetes/kro/README.md) for detailed KRO documentation and comparison with other tools.
 
@@ -295,7 +319,7 @@ The following scripts are available to automate deployment tasks:
 # Deploy infrastructure
 ./scripts/deploy_infrastructure.sh
 
-# Install ACK controllers
+# Install ACK controllers (all three required)
 ./scripts/ack_controller_install.sh iam game2048-dev eu-west-1
 ./scripts/ack_controller_install.sh dynamodb game2048-dev eu-west-1
 ./scripts/ack_controller_install.sh s3 game2048-dev eu-west-1
@@ -312,12 +336,32 @@ The following scripts are available to automate deployment tasks:
 
 ### Remove Application
 
-```bash
-# Delete application instances
-kubectl delete -f kubernetes/kro/instances/
+#### Option A: Automated Cleanup (Recommended)
 
-# Delete RGDs (optional, if you want to remove the definitions)
-kubectl delete -f kubernetes/kro/
+```bash
+# Remove application with proper dependency management
+./scripts/cleanup_kro_application.sh
+
+# Force cleanup without confirmation
+./scripts/cleanup_kro_application.sh --force
+```
+
+#### Option B: Manual Cleanup
+
+```bash
+# Delete application instances (in reverse order)
+kubectl delete -f kubernetes/kro/instances/game2048-app-instance.yaml
+kubectl delete -f kubernetes/kro/instances/game2048-backend-iam-role.yaml
+kubectl delete -f kubernetes/kro/instances/game2048-sessions-table.yaml
+kubectl delete -f kubernetes/kro/instances/game2048-leaderboard-table.yaml
+kubectl delete -f kubernetes/kro/instances/s3-instance.yaml
+
+# Delete RGDs
+kubectl delete -f kubernetes/kro/game2048-app-rgd.yaml
+kubectl delete -f kubernetes/kro/s3-rgd.yaml
+kubectl delete -f kubernetes/kro/iam-rgd.yaml
+kubectl delete -f kubernetes/kro/game-sessions-rgd.yaml
+kubectl delete -f kubernetes/kro/dynamodb-rgd.yaml
 
 # Remove namespace
 kubectl delete namespace game-2048
@@ -348,6 +392,7 @@ kubectl delete -f https://github.com/awslabs/kro/releases/latest/download/kro.ya
 ### Common Issues
 
 **Pods not starting:**
+
 ```bash
 # Check pod status and logs
 kubectl get pods -n game-2048
@@ -355,6 +400,7 @@ kubectl logs <pod-name> -n game-2048
 ```
 
 **DynamoDB permission errors:**
+
 ```bash
 # Verify IAM role is attached to service account
 kubectl get serviceaccount game2048-backend -n game-2048 -o yaml
@@ -362,6 +408,7 @@ kubectl get serviceaccount game2048-backend -n game-2048 -o yaml
 ```
 
 **Ingress not accessible:**
+
 ```bash
 # Check ALB controller is running
 kubectl get pods -n kube-system | grep aws-load-balancer-controller
@@ -371,6 +418,7 @@ kubectl describe ingress game2048-ingress -n game-2048
 ```
 
 **RGD not active:**
+
 ```bash
 # Check RGD status
 kubectl get rgd -n kro

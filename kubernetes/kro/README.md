@@ -222,14 +222,12 @@ Follow the main installation guide in the root [README.md](../../README.md#-inst
 1. **Deploy ResourceGraphDefinitions:**
 
    ```bash
-   # Core RGDs
+   # Deploy all RGDs
    kubectl apply -f iam-rgd.yaml
    kubectl apply -f dynamodb-rgd.yaml
    kubectl apply -f game-sessions-rgd.yaml
-   kubectl apply -f game2048-app-rgd.yaml
-   
-   # Optional: S3 backup
    kubectl apply -f s3-rgd.yaml
+   kubectl apply -f game2048-app-rgd.yaml
    ```
 
 2. **Wait for RGDs to be ready:**
@@ -242,6 +240,9 @@ Follow the main installation guide in the root [README.md](../../README.md#-inst
 3. **Deploy instances:**
 
    ```bash
+   # Deploy S3 bucket
+   kubectl apply -f instances/s3-instance.yaml
+   
    # Deploy DynamoDB tables
    kubectl apply -f instances/game2048-leaderboard-table.yaml
    kubectl apply -f instances/game2048-sessions-table.yaml
@@ -260,6 +261,7 @@ Follow the main installation guide in the root [README.md](../../README.md#-inst
    kubectl get pods -n game-2048
    kubectl get ingress -n game-2048
    kubectl get table -n kro
+   kubectl get bucket -n kro
    ```
 
 ## 🔧 Configuration
@@ -367,9 +369,11 @@ kubectl delete -f instances/game2048-app-instance.yaml
 kubectl delete -f instances/game2048-backend-iam-role.yaml
 kubectl delete -f instances/game2048-sessions-table.yaml
 kubectl delete -f instances/game2048-leaderboard-table.yaml
+kubectl delete -f instances/s3-instance.yaml
 
 # Remove ResourceGraphDefinitions
 kubectl delete -f game2048-app-rgd.yaml
+kubectl delete -f s3-rgd.yaml
 kubectl delete -f iam-rgd.yaml
 kubectl delete -f game-sessions-rgd.yaml
 kubectl delete -f dynamodb-rgd.yaml

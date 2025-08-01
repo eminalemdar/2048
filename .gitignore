@@ -64,3 +64,4 @@ terraform.rc
 *.tfvars.json
 
 tfplan
+destroy-plan
