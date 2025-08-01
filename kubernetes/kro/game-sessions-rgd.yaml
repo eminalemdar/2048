@@ -1,25 +1,21 @@
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
-  name: dynamodb-table
+  name: game-sessions-table
   namespace: kro
 spec:
   schema:
     apiVersion: v1alpha1
-    kind: DynamoDBTable
+    kind: GameSessionsTable
     spec:
       # Table configuration
-      tableName: string | default="game2048-leaderboard"
+      tableName: string | default="game2048-sessions-dev"
       region: string | default="eu-west-1"
       billingMode: string | default="PAY_PER_REQUEST"
 
-    status:
-      tableArn: string
-      tableStatus: string
-
   resources:
-    # DynamoDB Table using ACK DynamoDB Controller
-    - id: dynamodbTable
+    # DynamoDB Table for game sessions using ACK DynamoDB Controller
+    - id: gameSessionsTable
       template:
         apiVersion: dynamodb.services.k8s.aws/v1alpha1
         kind: Table
@@ -37,19 +33,6 @@ spec:
           attributeDefinitions:
             - attributeName: id
               attributeType: "S"
-            - attributeName: score
-              attributeType: "N"
-            - attributeName: timestamp
-              attributeType: "S"
-          globalSecondaryIndexes:
-            - indexName: ScoreIndex
-              keySchema:
-                - attributeName: score
-                  keyType: HASH
-                - attributeName: timestamp
-                  keyType: RANGE
-              projection:
-                projectionType: ALL
           billingMode: ${schema.spec.billingMode}
           tags:
             - key: Project
@@ -58,3 +41,5 @@ spec:
               value: KRO
             - key: Region
               value: ${schema.spec.region}
+            - key: Purpose
+              value: game-sessions

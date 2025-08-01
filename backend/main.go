@@ -20,8 +20,7 @@ func main() {
 	// Initialize leaderboard
 	initLeaderboard()
 
-	// Start cleanup routine
-	go cleanupOldGames()
+	// Game cleanup is now handled by DynamoDB TTL
 
 	// Game endpoints
 	http.HandleFunc("/health", withCORS(healthHandler))

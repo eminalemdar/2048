@@ -1,0 +1,10 @@
+apiVersion: kro.run/v1alpha1
+kind: IAMRoleForServiceAccount
+metadata:
+  name: game2048-backend-iam-role
+  namespace: kro
+spec:
+  roleName: "game2048-backend-role"
+  serviceAccountName: "game2048-backend"
+  serviceAccountNamespace: "game-2048"
+  region: "eu-west-1"

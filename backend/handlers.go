@@ -28,9 +28,12 @@ func newGameHandler(w http.ResponseWriter, r *http.Request) {
 	spawnTile(game)
 	spawnTile(game)
 
-	mu.Lock()
-	games[id] = game
-	mu.Unlock()
+	// Save game session to DynamoDB
+	if err := saveGameSession(game); err != nil {
+		log.Printf("Failed to save game session: %v", err)
+		http.Error(w, "Failed to create game", http.StatusInternalServerError)
+		return
+	}
 
 	log.Printf("New game created: %s", id)
 	w.Header().Set("Content-Type", "application/json")
@@ -63,15 +66,15 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mu.Lock()
-	game, ok := games[req.ID]
-	if !ok {
-		mu.Unlock()
+	// Load game session from DynamoDB
+	game, err := loadGameSession(req.ID)
+	if err != nil {
+		log.Printf("Game not found: %s, error: %v", req.ID, err)
 		http.Error(w, "Game not found", http.StatusNotFound)
 		return
 	}
+
 	if game.GameOver {
-		mu.Unlock()
 		http.Error(w, "Game over", http.StatusBadRequest)
 		return
 	}
@@ -83,9 +86,16 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 		if !canMove(game) {
 			game.GameOver = true
 		}
+
+		// Save updated game session to DynamoDB
+		if err := saveGameSession(game); err != nil {
+			log.Printf("Failed to save game session after move: %v", err)
+			http.Error(w, "Failed to save game state", http.StatusInternalServerError)
+			return
+		}
+
 		log.Printf("Move applied for game %s: %s (Score: %d)", req.ID, req.Direction, game.Score)
 	}
-	mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(game)
@@ -103,10 +113,10 @@ func stateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mu.Lock()
-	game, ok := games[id]
-	mu.Unlock()
-	if !ok {
+	// Load game session from DynamoDB
+	game, err := loadGameSession(id)
+	if err != nil {
+		log.Printf("Game not found: %s, error: %v", id, err)
 		http.Error(w, "Game not found", http.StatusNotFound)
 		return
 	}
@@ -179,7 +189,7 @@ func leaderboardHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get top scores
+	// Get top scores (will load fresh data from DynamoDB)
 	topScores := globalLeaderboard.GetTopScores(limit)
 
 	w.Header().Set("Content-Type", "application/json")

@@ -1,9 +1,9 @@
 apiVersion: kro.run/v1alpha1
-kind: DynamoDBTable
+kind: GameSessionsTable
 metadata:
-  name: game2048-leaderboard-dev
+  name: game2048-sessions-dev
   namespace: kro
 spec:
-  tableName: "game2048-leaderboard-dev"
+  tableName: "game2048-sessions-dev"
   region: "eu-west-1"
   billingMode: "PAY_PER_REQUEST"

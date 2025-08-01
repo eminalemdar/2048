@@ -25,7 +25,7 @@ variable "vpc_cidr" {
 variable "eks_cluster_version" {
   description = "EKS cluster version"
   type        = string
-  default     = "1.28"
+  default     = "1.33"
 }
 
 variable "eks_node_instance_types" {

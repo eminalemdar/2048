@@ -1,0 +1,18 @@
+apiVersion: kro.run/v1alpha1
+kind: Game2048Application
+metadata:
+  name: game2048-dev
+  namespace: kro
+spec:
+  name: "game2048"
+  namespace: "game-2048"
+  backendImage: "emnalmdr/2048-backend:latest"
+  backendReplicas: 2
+  backendPort: 8000
+  frontendImage: "emnalmdr/2048-frontend:v5"
+  frontendReplicas: 2
+  frontendPort: 80
+  tableName: "game2048-leaderboard-dev"
+  region: "eu-west-1"
+  hostname: "2048.local"
+  ingressClass: "alb"

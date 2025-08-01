@@ -62,3 +62,5 @@ terraform.rc
 # to change depending on the environment.
 *.tfvars
 *.tfvars.json
+
+tfplan

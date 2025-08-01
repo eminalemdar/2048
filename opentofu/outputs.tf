@@ -68,17 +68,23 @@ output "eks_oidc_provider_arn" {
 # Kubectl configuration command
 output "configure_kubectl" {
   description = "Configure kubectl: make sure you're logged in with the correct AWS profile and run the following command to update your kubeconfig"
-  value       = "aws eks --region ${var.aws_region} update-kubeconfig --name ${module.eks.cluster_id}"
+  value       = "aws eks --region ${var.aws_region} update-kubeconfig --name ${module.eks.cluster_name}"
+}
+
+# Region output
+output "aws_region" {
+  description = "AWS region"
+  value       = var.aws_region
 }
 
 # KRO Information
 output "kro_setup_info" {
   description = "Information for setting up KRO (Kubernetes Resource Operator)"
   value = {
-    cluster_name = module.eks.cluster_id
-    region       = var.aws_region
-    vpc_id       = module.vpc.vpc_id
-    private_subnets = module.vpc.private_subnets
+    cluster_name      = module.eks.cluster_name
+    region            = var.aws_region
+    vpc_id            = module.vpc.vpc_id
+    private_subnets   = module.vpc.private_subnets
     oidc_provider_arn = module.eks.oidc_provider_arn
   }
 }

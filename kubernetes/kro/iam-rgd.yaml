@@ -1,0 +1,79 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: iam-role-for-service-account
+  namespace: kro
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: IAMRoleForServiceAccount
+    spec:
+      # Role configuration
+      roleName: string
+      serviceAccountName: string
+      serviceAccountNamespace: string
+      region: string | default="eu-west-1"
+
+    status:
+      roleArn: string
+
+  resources:
+    # IAM Role with inline DynamoDB policy
+    - id: iamRole
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Role
+        metadata:
+          name: ${schema.spec.roleName}
+          namespace: ${schema.spec.serviceAccountNamespace}
+          labels:
+            app.kubernetes.io/managed-by: kro
+        spec:
+          name: ${schema.spec.roleName}
+          assumeRolePolicyDocument: |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "arn:aws:iam::247747705325:oidc-provider/oidc.eks.eu-west-1.amazonaws.com/id/8518702A8AA2A3556B6C9D98155E6B89"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "oidc.eks.eu-west-1.amazonaws.com/id/8518702A8AA2A3556B6C9D98155E6B89:sub": "system:serviceaccount:${schema.spec.serviceAccountNamespace}:${schema.spec.serviceAccountName}"
+                    }
+                  }
+                }
+              ]
+            }
+          inlinePolicies:
+            DynamoDBAccess: |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "dynamodb:GetItem",
+                      "dynamodb:PutItem",
+                      "dynamodb:UpdateItem",
+                      "dynamodb:DeleteItem",
+                      "dynamodb:Scan",
+                      "dynamodb:Query"
+                    ],
+                    "Resource": [
+                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-sessions-dev",
+                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-leaderboard-dev",
+                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-sessions-dev/index/*",
+                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-leaderboard-dev/index/*"
+                    ]
+                  }
+                ]
+              }
+          tags:
+            - key: Project
+              value: game2048
+            - key: ManagedBy
+              value: KRO

@@ -51,14 +51,23 @@ func (l *Leaderboard) AddScore(entry LeaderboardEntry) {
 		l.entries = l.entries[:1000]
 	}
 
-	// Save to persistent storage
-	go l.saveToPersistentStorage()
+	// Save individual entry to DynamoDB immediately
+	if dynamodbClient != nil {
+		go func() {
+			if err := globalLeaderboard.saveEntryToDynamoDB(entry); err != nil {
+				log.Printf("Failed to save entry to DynamoDB: %v", err)
+			}
+		}()
+	}
 
 	log.Printf("New score added: %s - %d points", entry.Name, entry.Score)
 }
 
-// GetTopScores returns the top N scores
+// GetTopScores returns the top N scores (always loads fresh from DynamoDB)
 func (l *Leaderboard) GetTopScores(limit int) []LeaderboardEntry {
+	// Always load fresh data from DynamoDB to ensure consistency across pods
+	l.loadFromPersistentStorage()
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 

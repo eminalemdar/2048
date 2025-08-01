@@ -20,7 +20,7 @@ module "eks" {
   # EKS Managed Node Groups
   eks_managed_node_groups = {
     main = {
-      name = "${local.name}-node-group"
+      name = "${local.name}-nodes"
 
       instance_types = var.eks_node_instance_types
 
@@ -30,7 +30,7 @@ module "eks" {
 
       create_launch_template = true
       disk_size              = 50
-      ami_type               = "AL2_x86_64"
+      ami_type               = "AL2023_x86_64_STANDARD"
       capacity_type          = "ON_DEMAND"
 
       # Node group scaling configuration
@@ -92,11 +92,7 @@ module "eks" {
   # Access entries will be managed separately if needed
 
   # OIDC Identity provider
-  cluster_identity_providers = {
-    sts = {
-      client_id = "sts.amazonaws.com"
-    }
-  }
+  cluster_identity_providers = {}
 
   # Extend cluster security group rules
   cluster_security_group_additional_rules = {
@@ -152,23 +148,7 @@ module "eks_blueprints_addons" {
   }
 
   # Metrics Server
-  enable_metrics_server = true
-  metrics_server = {
-    chart_version = "3.11.0"
-    repository    = "https://kubernetes-sigs.github.io/metrics-server/"
-    namespace     = "kube-system"
-    values = [
-      yamlencode({
-        args = [
-          "--cert-dir=/tmp",
-          "--secure-port=4443",
-          "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname",
-          "--kubelet-use-node-status-port",
-          "--metric-resolution=15s"
-        ]
-      })
-    ]
-  }
+  enable_metrics_server = false
 
   # NGINX Ingress Controller
   enable_ingress_nginx = true
@@ -212,6 +192,11 @@ module "eks_blueprints_addons" {
   }
 
   tags = local.common_tags
+
+  depends_on = [
+    module.eks.eks_managed_node_groups,
+    module.eks.cluster_addons
+  ]
 }
 # AWS Auth ConfigMap using dedicated module
 module "eks_aws_auth" {

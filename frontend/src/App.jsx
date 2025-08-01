@@ -119,7 +119,9 @@ export default function Game2048() {
     try {
       setLoading(true);
       setError(null);
+      console.log('Starting new game...');
       const res = await axios.post(`${API}/game/new`);
+      console.log('New game response:', res.data);
       setGameId(res.data.id);
       gameIdRef.current = res.data.id;
       setBoard(res.data.board);
@@ -133,6 +135,7 @@ export default function Game2048() {
       setGameStartTime(Date.now());
       setMoveCount(0);
     } catch (err) {
+      console.error('Error creating new game:', err);
       setError("Error creating new game.");
     } finally {
       setLoading(false);
@@ -184,12 +187,14 @@ export default function Game2048() {
 
   const handleMove = async (dir) => {
     if (!gameIdRef.current || gameOverRef.current || loadingRef.current || isMoving) {
+      console.log('Move blocked:', { gameId: gameIdRef.current, gameOver: gameOverRef.current, loading: loadingRef.current, isMoving });
       return;
     }
     
     try {
       setIsMoving(true);
       setError(null);
+      console.log('Making move:', dir, 'for game:', gameIdRef.current);
       
       const res = await axios.post(`${API}/game/move`, { id: gameIdRef.current, direction: dir });
       
@@ -222,10 +227,16 @@ export default function Game2048() {
       setMoveCount(prev => prev + 1);
       
       // Check if game ended and show submit score option
-      if (res.data.gameOver && score > 0) {
+      console.log('Game response:', { gameOver: res.data.gameOver, score: res.data.score, currentScore: score });
+      console.log('Game over check:', res.data.gameOver, 'Score check:', res.data.score > 0, 'Full response:', res.data);
+      if (res.data.gameOver && res.data.score > 0) {
+        console.log('Game over detected, showing submit score dialog');
         setTimeout(() => setShowSubmitScore(true), 1000);
+      } else {
+        console.log('Game over not detected - gameOver:', res.data.gameOver, 'score:', res.data.score);
       }
     } catch (err) {
+      console.error('Error making move:', err);
       setError("Error making move.");
     } finally {
       setTimeout(() => setIsMoving(false), 150);

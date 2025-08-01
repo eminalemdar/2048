@@ -1,10 +1,8 @@
 package main
 
 import (
-	"log"
 	"math/rand"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -17,10 +15,7 @@ type GameState struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-var (
-	games = make(map[string]*GameState)
-	mu    sync.Mutex
-)
+// Removed in-memory storage - now using DynamoDB
 
 func generateID() string {
 	return time.Now().Format("20060102150405") + strconv.Itoa(rand.Intn(10000))
@@ -155,19 +150,4 @@ func checkWin(game *GameState) {
 	}
 }
 
-func cleanupOldGames() {
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		mu.Lock()
-		cutoff := time.Now().Add(-1 * time.Hour)
-		for id, game := range games {
-			if game.CreatedAt.Before(cutoff) {
-				delete(games, id)
-				log.Printf("Cleaned up old game: %s", id)
-			}
-		}
-		mu.Unlock()
-	}
-}
+// Game cleanup is now handled by DynamoDB TTL

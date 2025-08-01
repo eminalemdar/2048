@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -29,6 +30,10 @@ func initStorage() {
 	}
 
 	log.Printf("Initializing storage for environment: %s", environment)
+
+	// Log environment variables for debugging
+	log.Printf("Environment variables - GAME_SESSIONS_TABLE: %s, DYNAMODB_TABLE: %s, AWS_REGION: %s",
+		os.Getenv("GAME_SESSIONS_TABLE"), os.Getenv("DYNAMODB_TABLE"), os.Getenv("AWS_REGION"))
 
 	// Environment-specific initialization
 	switch environment {
@@ -164,10 +169,10 @@ func (l *Leaderboard) loadFromS3() {
 	log.Printf("Leaderboard loaded from S3: %d entries", len(entries))
 }
 
-// DynamoDB Storage Implementation
-func (l *Leaderboard) saveToDynamoDB() {
+// DynamoDB Storage Implementation - Save individual entry
+func (l *Leaderboard) saveEntryToDynamoDB(entry LeaderboardEntry) error {
 	if dynamodbClient == nil {
-		return
+		return fmt.Errorf("DynamoDB client not initialized")
 	}
 
 	tableName := os.Getenv("DYNAMODB_TABLE")
@@ -175,41 +180,51 @@ func (l *Leaderboard) saveToDynamoDB() {
 		tableName = "game2048-leaderboard"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// First, clear existing data by scanning and deleting all items
-	l.clearDynamoDBTable(ctx, tableName)
-
-	// Insert new entries
-	for _, entry := range l.entries {
-		item := map[string]types.AttributeValue{
-			"id": &types.AttributeValueMemberS{
-				Value: entry.ID,
-			},
-			"name": &types.AttributeValueMemberS{
-				Value: entry.Name,
-			},
-			"score": &types.AttributeValueMemberN{
-				Value: strconv.Itoa(entry.Score),
-			},
-			"timestamp": &types.AttributeValueMemberS{
-				Value: entry.Timestamp.Format(time.RFC3339),
-			},
-		}
-
-		_, err := dynamodbClient.PutItem(ctx, &dynamodb.PutItemInput{
-			TableName: aws.String(tableName),
-			Item:      item,
-		})
-
-		if err != nil {
-			log.Printf("Error saving entry to DynamoDB: %v", err)
-			continue
-		}
+	item := map[string]types.AttributeValue{
+		"id": &types.AttributeValueMemberS{
+			Value: entry.ID,
+		},
+		"name": &types.AttributeValueMemberS{
+			Value: entry.Name,
+		},
+		"score": &types.AttributeValueMemberN{
+			Value: strconv.Itoa(entry.Score),
+		},
+		"timestamp": &types.AttributeValueMemberS{
+			Value: entry.Timestamp.Format(time.RFC3339),
+		},
+		"playerId": &types.AttributeValueMemberS{
+			Value: entry.PlayerID,
+		},
+		"duration": &types.AttributeValueMemberN{
+			Value: strconv.Itoa(entry.Duration),
+		},
+		"moves": &types.AttributeValueMemberN{
+			Value: strconv.Itoa(entry.Moves),
+		},
 	}
 
-	log.Printf("Leaderboard saved to DynamoDB: %d entries", len(l.entries))
+	_, err := dynamodbClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	})
+
+	if err != nil {
+		log.Printf("Error saving entry to DynamoDB: %v", err)
+		return err
+	}
+
+	log.Printf("Entry saved to DynamoDB: %s - %d points", entry.Name, entry.Score)
+	return nil
+}
+
+// Legacy function - now just saves individual entries
+func (l *Leaderboard) saveToDynamoDB() {
+	// This function is now deprecated - we save entries individually
+	log.Printf("saveToDynamoDB called - entries are now saved individually")
 }
 
 func (l *Leaderboard) loadFromDynamoDB() {
@@ -244,6 +259,11 @@ func (l *Leaderboard) loadFromDynamoDB() {
 			entry.ID = idAttr.Value
 		}
 
+		// Extract PlayerID
+		if playerIdAttr, ok := item["playerId"].(*types.AttributeValueMemberS); ok {
+			entry.PlayerID = playerIdAttr.Value
+		}
+
 		// Extract Name
 		if nameAttr, ok := item["name"].(*types.AttributeValueMemberS); ok {
 			entry.Name = nameAttr.Value
@@ -253,6 +273,20 @@ func (l *Leaderboard) loadFromDynamoDB() {
 		if scoreAttr, ok := item["score"].(*types.AttributeValueMemberN); ok {
 			if score, err := strconv.Atoi(scoreAttr.Value); err == nil {
 				entry.Score = score
+			}
+		}
+
+		// Extract Duration
+		if durationAttr, ok := item["duration"].(*types.AttributeValueMemberN); ok {
+			if duration, err := strconv.Atoi(durationAttr.Value); err == nil {
+				entry.Duration = duration
+			}
+		}
+
+		// Extract Moves
+		if movesAttr, ok := item["moves"].(*types.AttributeValueMemberN); ok {
+			if moves, err := strconv.Atoi(movesAttr.Value); err == nil {
+				entry.Moves = moves
 			}
 		}
 
@@ -273,33 +307,111 @@ func (l *Leaderboard) loadFromDynamoDB() {
 	log.Printf("Leaderboard loaded from DynamoDB: %d entries", len(entries))
 }
 
-// Helper function to clear DynamoDB table
-func (l *Leaderboard) clearDynamoDBTable(ctx context.Context, tableName string) {
-	// Scan to get all items
-	result, err := dynamodbClient.Scan(ctx, &dynamodb.ScanInput{
-		TableName:            aws.String(tableName),
-		ProjectionExpression: aws.String("id"), // Only get the key
+// clearDynamoDBTable function removed - we now use append-only approach
+
+// Game session storage functions
+func saveGameSession(game *GameState) error {
+	gameData, err := json.Marshal(game)
+	if err != nil {
+		log.Printf("Failed to marshal game state for game %s: %v", game.ID, err)
+		return fmt.Errorf("failed to marshal game state: %w", err)
+	}
+
+	tableName := os.Getenv("GAME_SESSIONS_TABLE")
+	if tableName == "" {
+		tableName = "game2048-sessions-dev"
+	}
+
+	log.Printf("Saving game session %s to table %s", game.ID, tableName)
+
+	item := map[string]types.AttributeValue{
+		"id":        &types.AttributeValueMemberS{Value: game.ID},
+		"gameData":  &types.AttributeValueMemberS{Value: string(gameData)},
+		"createdAt": &types.AttributeValueMemberS{Value: game.CreatedAt.Format(time.RFC3339)},
+		"ttl":       &types.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(1*time.Hour).Unix(), 10)},
+	}
+
+	_, err = dynamodbClient.PutItem(context.TODO(), &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
 	})
 
 	if err != nil {
-		log.Printf("Error scanning DynamoDB table for cleanup: %v", err)
-		return
+		log.Printf("DynamoDB PutItem error for game %s: %v", game.ID, err)
+		return fmt.Errorf("failed to save game session: %w", err)
 	}
 
-	// Delete each item
-	for _, item := range result.Items {
-		if idAttr, ok := item["id"].(*types.AttributeValueMemberS); ok {
-			_, err := dynamodbClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-				TableName: aws.String(tableName),
-				Key: map[string]types.AttributeValue{
-					"id": &types.AttributeValueMemberS{Value: idAttr.Value},
-				},
-			})
-			if err != nil {
-				log.Printf("Error deleting item from DynamoDB: %v", err)
-			}
-		}
+	log.Printf("Game session saved successfully: %s", game.ID)
+	return nil
+}
+
+func loadGameSession(gameID string) (*GameState, error) {
+	tableName := os.Getenv("GAME_SESSIONS_TABLE")
+	if tableName == "" {
+		tableName = "game2048-sessions-dev"
 	}
+
+	log.Printf("Loading game session %s from table %s", gameID, tableName)
+
+	result, err := dynamodbClient.GetItem(context.TODO(), &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: gameID},
+		},
+	})
+
+	if err != nil {
+		log.Printf("DynamoDB GetItem error for game %s: %v", gameID, err)
+		return nil, fmt.Errorf("failed to load game session: %w", err)
+	}
+
+	if result.Item == nil {
+		log.Printf("Game session %s not found in DynamoDB table %s", gameID, tableName)
+		return nil, fmt.Errorf("game session not found")
+	}
+
+	gameDataAttr, ok := result.Item["gameData"]
+	if !ok {
+		log.Printf("Game data attribute missing for game %s", gameID)
+		return nil, fmt.Errorf("game data not found in session")
+	}
+
+	gameDataStr, ok := gameDataAttr.(*types.AttributeValueMemberS)
+	if !ok {
+		log.Printf("Invalid game data format for game %s", gameID)
+		return nil, fmt.Errorf("invalid game data format")
+	}
+
+	var game GameState
+	err = json.Unmarshal([]byte(gameDataStr.Value), &game)
+	if err != nil {
+		log.Printf("Failed to unmarshal game state for game %s: %v", gameID, err)
+		return nil, fmt.Errorf("failed to unmarshal game state: %w", err)
+	}
+
+	log.Printf("Successfully loaded game session %s", gameID)
+	return &game, nil
+}
+
+func deleteGameSession(gameID string) error {
+	tableName := os.Getenv("GAME_SESSIONS_TABLE")
+	if tableName == "" {
+		tableName = "game2048-sessions-dev"
+	}
+
+	_, err := dynamodbClient.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: gameID},
+		},
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to delete game session: %w", err)
+	}
+
+	log.Printf("Game session deleted: %s", gameID)
+	return nil
 }
 
 // Cleanup storage connections (DynamoDB client doesn't need explicit cleanup)
