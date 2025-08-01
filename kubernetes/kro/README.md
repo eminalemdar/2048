@@ -101,18 +101,18 @@ KRO enables **Kubernetes-native** management of AWS resources through ResourceGr
 
 ```text
 kubernetes/kro/
-├── README.md                        # This file
-├── deploy-kro.sh                   # Separate RGDs deployment script
-├── deploy-stack.sh                 # Complete stack deployment script
-├── dynamodb-rgd.yaml              # DynamoDB ResourceGraphDefinition
-├── s3-rgd.yaml                     # S3 ResourceGraphDefinition
-├── game2048-app-rgd.yaml          # Application ResourceGraphDefinition
-├── game2048-stack-rgd.yaml        # Complete stack ResourceGraphDefinition
+├── README.md                           # This file
+├── dynamodb-rgd.yaml                  # DynamoDB ResourceGraphDefinition
+├── game-sessions-rgd.yaml             # Game sessions table RGD
+├── iam-rgd.yaml                       # IAM role for service accounts RGD
+├── game2048-app-rgd.yaml             # Application ResourceGraphDefinition
+├── s3-rgd.yaml                        # S3 ResourceGraphDefinition (optional)
 └── instances/
-    ├── dynamodb-instance.yaml      # DynamoDB table instance
-    ├── s3-instance.yaml            # S3 bucket instance
-    ├── app-instance.yaml           # Application instance
-    └── game2048-stack-instance.yaml # Complete stack instance
+    ├── game2048-leaderboard-table.yaml    # Leaderboard DynamoDB table
+    ├── game2048-sessions-table.yaml       # Game sessions DynamoDB table
+    ├── game2048-backend-iam-role.yaml     # IAM role for backend
+    ├── game2048-app-instance.yaml         # Complete application
+    └── s3-instance.yaml                   # S3 backup bucket (optional)
 ```
 
 ## 🚀 Prerequisites
@@ -128,163 +128,186 @@ Before deploying KRO resources, ensure you have:
 
 ```bash
 # 1. Deploy infrastructure
-cd ../../opentofu
-tofu apply
+../../scripts/deploy_infrastructure.sh
 
-# 2. Configure kubectl
-aws eks --region eu-west-1 update-kubeconfig --name game2048-dev-cluster
-
-# 3. Install KRO
+# 2. Install KRO
 ../../scripts/kro_install.sh
 
-# 4. Install ACK controllers
-../../scripts/ack_controller_install.sh dynamodb
-../../scripts/ack_controller_install.sh s3
+# 3. Install ACK controllers
+../../scripts/ack_controller_install.sh iam game2048-dev eu-west-1
+../../scripts/ack_controller_install.sh dynamodb game2048-dev eu-west-1
+../../scripts/ack_controller_install.sh s3 game2048-dev eu-west-1
 ```
 
 ## 🎯 ResourceGraphDefinitions
 
-### 1. DynamoDB Table RGD (`dynamodb-rgd.yaml`)
+### 1. IAM Role RGD (`iam-rgd.yaml`)
 
-Creates a **DynamoDB table** with:
+Creates **IAM roles for service accounts** with:
+
+- **IRSA trust policy** for EKS service accounts
+- **DynamoDB permissions** for table access
+- **Inline policies** for security
+- **Proper resource ARNs** for least privilege
+
+**Generated Resources:**
+
+- IAM Role (via ACK IAM controller)
+- Inline policies for DynamoDB access
+
+### 2. DynamoDB Table RGD (`dynamodb-rgd.yaml`)
+
+Creates **DynamoDB tables** with:
 
 - **Primary key**: `id` (String)
 - **Global Secondary Index**: `ScoreIndex` for leaderboard queries
-- **Point-in-time recovery** enabled
-- **Server-side encryption** enabled
-- **Configurable billing mode** (PAY_PER_REQUEST or PROVISIONED)
+- **Pay-per-request billing** for cost optimization
+- **Proper tagging** for resource management
 
 **Generated Resources:**
 
-- DynamoDB Table (via ACK)
-- ConfigMap with table configuration
-- Service Account with IAM role
+- DynamoDB Table (via ACK DynamoDB controller)
 
-### 2. S3 Backup Bucket RGD (`s3-rgd.yaml`)
+### 3. Game Sessions RGD (`game-sessions-rgd.yaml`)
 
-Creates an **S3 bucket** with:
+Creates **game session storage** with:
+
+- **Simple key schema** for session IDs
+- **Pay-per-request billing**
+- **Optimized for transient data**
+
+**Generated Resources:**
+
+- DynamoDB Table for game sessions
+
+### 4. Game2048 Application RGD (`game2048-app-rgd.yaml`)
+
+Creates the **complete application stack** with:
+
+- **Backend and Frontend** deployments (2 replicas each)
+- **Services** for internal communication
+- **ALB Ingress** for external access
+- **Service Account** with IAM role annotation
+- **Health checks** and resource limits
+
+**Generated Resources:**
+
+- Namespace (`game-2048`)
+- Backend Deployment + Service
+- Frontend Deployment + Service  
+- ALB Ingress with proper routing
+- Service Account with IRSA annotation
+
+### 5. S3 Backup RGD (`s3-rgd.yaml`) - Optional
+
+Creates **S3 backup storage** with:
 
 - **Versioning** enabled
-- **Server-side encryption** (AES256 or KMS)
+- **Server-side encryption**
 - **Lifecycle policies** for cost optimization
-- **Public access blocked** for security
-- **Bucket policy** for application access
+- **Public access blocked**
 
 **Generated Resources:**
 
-- S3 Bucket (via ACK)
-- Bucket Policy for access control
-- ConfigMap with bucket configuration
-- Service Account with IAM role
-
-### 3. Game2048 Application RGD (`game2048-app-rgd.yaml`)
-
-Creates the **complete application** with:
-
-- **Backend and Frontend** deployments
-- **Services** for internal communication
-- **Ingress** for external access
-- **HPA** for auto-scaling
-- **ConfigMaps** for configuration
-
-**Generated Resources:**
-
-- Namespace
-- Deployments (backend, frontend)
-- Services (ClusterIP)
-- Ingress (NGINX)
-- HorizontalPodAutoscalers
-- ConfigMaps
+- S3 Bucket (via ACK S3 controller)
 
 ## 🚀 Deployment
 
-### Quick Deploy
+### Quick Deploy (Recommended)
 
-```bash
-# Deploy everything with your AWS account ID
-./deploy-kro.sh --aws-account-id 123456789012 --bucket-suffix mycompany
-
-# Dry-run to preview changes
-./deploy-kro.sh --aws-account-id 123456789012 --dry-run
-
-# Deploy only ResourceGraphDefinitions
-./deploy-kro.sh --aws-account-id 123456789012 --skip-instances
-```
+Follow the main installation guide in the root [README.md](../../README.md#-installation-guide) for the complete step-by-step process.
 
 ### Manual Deployment
 
 1. **Deploy ResourceGraphDefinitions:**
 
    ```bash
+   # Core RGDs
+   kubectl apply -f iam-rgd.yaml
    kubectl apply -f dynamodb-rgd.yaml
-   kubectl apply -f s3-rgd.yaml
+   kubectl apply -f game-sessions-rgd.yaml
    kubectl apply -f game2048-app-rgd.yaml
+   
+   # Optional: S3 backup
+   kubectl apply -f s3-rgd.yaml
    ```
 
 2. **Wait for RGDs to be ready:**
 
    ```bash
    kubectl get resourcegraphdefinitions -n kro
+   # All should show STATE: Active
    ```
 
-3. **Update instance files** with your AWS account ID and bucket suffix
-
-4. **Deploy instances:**
+3. **Deploy instances:**
 
    ```bash
-   kubectl apply -f instances/dynamodb-instance.yaml
-   kubectl apply -f instances/s3-instance.yaml
-   kubectl apply -f instances/app-instance.yaml
+   # Deploy DynamoDB tables
+   kubectl apply -f instances/game2048-leaderboard-table.yaml
+   kubectl apply -f instances/game2048-sessions-table.yaml
+   
+   # Deploy IAM role for backend
+   kubectl apply -f instances/game2048-backend-iam-role.yaml
+   
+   # Deploy the application
+   kubectl apply -f instances/game2048-app-instance.yaml
+   ```
+
+4. **Verify deployment:**
+
+   ```bash
+   # Check all resources
+   kubectl get pods -n game-2048
+   kubectl get ingress -n game-2048
+   kubectl get table -n kro
    ```
 
 ## 🔧 Configuration
 
+### IAM Role Instance Configuration
+
+```yaml
+apiVersion: kro.run/v1alpha1
+kind: IAMRoleForServiceAccount
+metadata:
+  name: game2048-backend-iam-role
+spec:
+  roleName: "game2048-backend-role"
+  serviceAccountName: "game2048-backend"
+  serviceAccountNamespace: "game-2048"
+  region: "eu-west-1"
+```
+
 ### DynamoDB Instance Configuration
 
 ```yaml
+apiVersion: kro.run/v1alpha1
+kind: DynamoDBTable
+metadata:
+  name: game2048-leaderboard-dev
 spec:
-  tableName: "game2048-leaderboard"
+  tableName: "game2048-leaderboard-dev"
   region: "eu-west-1"
-  billingMode: "PAY_PER_REQUEST"  # or "PROVISIONED"
-  pointInTimeRecovery: true
-  serverSideEncryption: true
-```
-
-### S3 Instance Configuration
-
-```yaml
-spec:
-  bucketName: "game2048-backup-unique-suffix"
-  region: "eu-west-1"
-  versioning: true
-  encryption:
-    enabled: true
-    algorithm: "AES256"  # or "aws:kms"
-  lifecycle:
-    enabled: true
-    transitionToIA: 30
-    transitionToGlacier: 90
-    expiration: 365
+  billingMode: "PAY_PER_REQUEST"
 ```
 
 ### Application Instance Configuration
 
 ```yaml
+apiVersion: kro.run/v1alpha1
+kind: Game2048Application
+metadata:
+  name: game2048-dev
 spec:
-  backend:
-    image: "2048-backend:latest"
-    replicas: 3
-  frontend:
-    image: "2048-frontend:latest"
-    replicas: 3
-  ingress:
-    enabled: true
-    hostname: "2048.local"
-  autoscaling:
-    enabled: true
-    minReplicas: 2
-    maxReplicas: 10
-    targetCPU: 70
+  name: "game2048"
+  namespace: "game-2048"
+  backendImage: "emnalmdr/2048-backend:latest"
+  backendReplicas: 2
+  frontendImage: "emnalmdr/2048-frontend:v5"
+  frontendReplicas: 2
+  tableName: "game2048-leaderboard-dev"
+  region: "eu-west-1"
+  ingressClass: "alb"
 ```
 
 ## 🔍 Monitoring and Troubleshooting
@@ -339,22 +362,26 @@ kubectl logs -n ack-system -l app.kubernetes.io/name=ack-s3-controller
 ### Remove All Resources
 
 ```bash
-# Remove instances
-kubectl delete -f instances/
+# Remove instances (in reverse order)
+kubectl delete -f instances/game2048-app-instance.yaml
+kubectl delete -f instances/game2048-backend-iam-role.yaml
+kubectl delete -f instances/game2048-sessions-table.yaml
+kubectl delete -f instances/game2048-leaderboard-table.yaml
 
 # Remove ResourceGraphDefinitions
-kubectl delete -f dynamodb-rgd.yaml
-kubectl delete -f s3-rgd.yaml
 kubectl delete -f game2048-app-rgd.yaml
+kubectl delete -f iam-rgd.yaml
+kubectl delete -f game-sessions-rgd.yaml
+kubectl delete -f dynamodb-rgd.yaml
 
 # Remove namespace
 kubectl delete namespace game-2048
 ```
 
-### Remove KRO
+### Remove KRO (Optional)
 
 ```bash
-../../scripts/kro_uninstall.sh --remove-crds --force
+../../scripts/kro_uninstall.sh
 ```
 
 ## 🎯 Benefits of KRO Approach

@@ -26,6 +26,22 @@ This directory contains OpenTofu configuration to provision core AWS infrastruct
 
 ### Deploy Infrastructure
 
+#### Option 1: Automated Deployment (Recommended)
+
+```bash
+# Use the automated deployment script
+../scripts/deploy_infrastructure.sh
+```
+
+This script will:
+
+- Copy and customize terraform.tfvars
+- Initialize OpenTofu
+- Plan and apply the infrastructure
+- Configure kubectl automatically
+
+#### Option 2: Manual Deployment
+
 1. **Copy and customize variables:**
 
    ```bash
@@ -33,49 +49,21 @@ This directory contains OpenTofu configuration to provision core AWS infrastruct
    # Edit terraform.tfvars with your values
    ```
 
-2. **Initialize OpenTofu:**
+2. **Initialize and deploy:**
 
    ```bash
    tofu init
-   ```
-
-3. **Plan the deployment:**
-
-   ```bash
    tofu plan
-   ```
-
-4. **Apply the infrastructure:**
-
-   ```bash
    tofu apply
    ```
 
-5. **Configure kubectl:**
+3. **Configure kubectl:**
 
    ```bash
    # Use the output command from tofu apply
-   aws eks --region eu-west-1 update-kubeconfig --name game2048-dev-cluster
-   ```
-
-6. **Install ACK Controllers (Optional):**
-
-   ```bash
-   # Install DynamoDB controller
-   ../scripts/ack_controller_install.sh dynamodb
-   
-   # Install S3 controller
-   ../scripts/ack_controller_install.sh s3
-   ```
-
-7. **Install KRO for application resources:**
-
-   ```bash
-   # Install KRO using our script (recommended)
-   ../scripts/kro_install.sh
-   
-   # Deploy DynamoDB and S3 resources using KRO
-   # (KRO manifests will be created separately)
+   CLUSTER_NAME=$(tofu output -raw eks_cluster_id)
+   AWS_REGION=$(tofu output -raw aws_region)
+   aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME
    ```
 
 ## 📋 Configuration Variables
@@ -167,14 +155,14 @@ eks_auth_users = [
 ### Install ACK Controllers
 
 ```bash
-# Install DynamoDB controller
-../scripts/ack_controller_install.sh dynamodb
+# Get cluster details from OpenTofu output
+CLUSTER_NAME=$(tofu output -raw eks_cluster_id)
+AWS_REGION=$(tofu output -raw aws_region)
 
-# Install S3 controller  
-../scripts/ack_controller_install.sh s3
-
-# Install with custom cluster/region
-../scripts/ack_controller_install.sh rds my-cluster us-west-2
+# Install required controllers
+../scripts/ack_controller_install.sh iam $CLUSTER_NAME $AWS_REGION
+../scripts/ack_controller_install.sh dynamodb $CLUSTER_NAME $AWS_REGION
+../scripts/ack_controller_install.sh s3 $CLUSTER_NAME $AWS_REGION
 ```
 
 ### Remove ACK Controllers
@@ -239,11 +227,33 @@ eks_auth_users = [
 
 ## 🎯 Next Steps
 
-1. **Deploy core infrastructure** with OpenTofu
+After deploying the infrastructure, follow the complete installation guide:
+
+1. **✅ Deploy core infrastructure** with OpenTofu (this directory)
 2. **Install ACK controllers** for AWS resource management
-3. **Install KRO** on your EKS cluster
-4. **Create KRO manifests** for DynamoDB and S3
-5. **Deploy your application** to the cluster
+3. **Install KRO** on your EKS cluster  
+4. **Deploy KRO ResourceGraphDefinitions** for application resources
+5. **Deploy application instances** using KRO
+
+See the main [README.md](../README.md#-installation-guide) for the complete step-by-step process.
+
+## 🎮 Complete 2048 Game Deployment
+
+This infrastructure supports the complete 2048 game application with:
+
+- ✅ **Scalable EKS cluster** with managed node groups
+- ✅ **DynamoDB integration** for persistent leaderboard
+- ✅ **IAM roles with IRSA** for secure AWS access
+- ✅ **ALB ingress** for external access
+- ✅ **Auto-scaling** and high availability
+- ✅ **Production-ready** security and networking
+
+The infrastructure provides the foundation for:
+
+- **Automatic score submission** when games end
+- **Persistent leaderboard** across pod restarts
+- **Multi-pod consistency** with DynamoDB storage
+- **Secure AWS resource access** via service accounts
 
 This approach provides:
 
@@ -251,3 +261,4 @@ This approach provides:
 - ✅ **Best practices** using community modules
 - ✅ **Kubernetes-native** resource management with KRO and ACK
 - ✅ **Maintainable** and **scalable** architecture
+- ✅ **Production-ready** 2048 game deployment
