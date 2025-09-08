@@ -20,7 +20,7 @@ A modern, responsive 2048 game built with React frontend and Go backend, featuri
 - **Database**: AWS DynamoDB (with S3 backup support)
 - **Containerized**: Docker & Docker Compose
 - **Kubernetes ready**: Production manifests included
-- **KRO support**: Kubernetes Resource Operator for simplified AWS resource management
+- **KRO support**: Kube Resource Orchestrator for simplified AWS resource management
 
 ## 🚀 Running Locally
 
@@ -53,7 +53,7 @@ This guide provides step-by-step instructions for deploying the 2048 game applic
 The application uses the following components:
 
 - **EKS Cluster**: Managed Kubernetes cluster on AWS
-- **KRO**: Kubernetes Resource Operator for resource composition
+- **KRO**: Kube Resource Orchestrator for resource composition
 - **ACK Controllers**: AWS Controllers for Kubernetes (IAM, DynamoDB, S3)
 - **ALB**: Application Load Balancer for ingress
 - **DynamoDB**: NoSQL database for game sessions and leaderboard
@@ -111,7 +111,7 @@ These controllers enable Kubernetes to manage AWS resources like DynamoDB tables
 
 ### Step 3: Install KRO
 
-Install the Kubernetes Resource Operator for simplified resource management:
+Install the Kube Resource Orchestrator for simplified resource management:
 
 ```bash
 # Install KRO
@@ -255,7 +255,7 @@ echo "<INGRESS_IP> 2048.local" >> /etc/hosts
 # Then visit http://2048.local
 ```
 
-## 🎛️ KRO (Kubernetes Resource Operator) Deployment
+## 🎛️ KRO (Kube Resource Orchestrator) Deployment
 
 For a more Kubernetes-native approach to managing AWS resources, you can use KRO instead of traditional Kubernetes manifests.
 
