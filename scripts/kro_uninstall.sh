@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# KRO (Kubernetes Resource Operator) Uninstallation Script
+# KRO (Kube Resource Orchestrator) Uninstallation Script
 # Usage: ./kro_uninstall.sh [options]
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
