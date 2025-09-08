@@ -1,10 +1,10 @@
-# KRO (Kubernetes Resource Operator) Manifests
+# KRO (Kube Resource Orchestrator) Manifests
 
 This directory contains KRO ResourceGraphDefinitions and instances for deploying the 2048 game with AWS resources managed through Kubernetes.
 
 ## 🤔 What is KRO?
 
-**KRO (Kubernetes Resource Operator)** is a Kubernetes operator that enables you to create **custom APIs** for managing complex resource compositions. Think of it as a way to build your own Kubernetes resources that can create and manage multiple other resources as a single unit.
+**KRO (Kube Resource Orchestrator)** is a Kubernetes operator that enables you to create **custom APIs** for managing complex resource compositions. Think of it as a way to build your own Kubernetes resources that can create and manage multiple other resources as a single unit.
 
 ### **Key Concepts:**
 
