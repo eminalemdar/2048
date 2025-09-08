@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# KRO (Kubernetes Resource Operator) Installation Script
+# KRO (Kube Resource Orchestrator) Installation Script
 # Usage: ./kro_install.sh [cluster-name] [region]
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -75,7 +75,7 @@ get_kro_version() {
 # Install KRO using Helm
 install_kro() {
     log_info "======================================================"
-    log_info "Installing KRO (Kubernetes Resource Operator)"
+    log_info "Installing KRO (Kube Resource Orchestrator)"
     log_info "======================================================"
     
     log_info "Fetching latest KRO version from GitHub..."
