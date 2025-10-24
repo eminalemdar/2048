@@ -61,7 +61,10 @@ get_kro_version() {
     log_info "Fetching latest KRO version from GitHub..."
     
     local KRO_VERSION
-    KRO_VERSION=$(curl -sL https://api.github.com/repos/kro-run/kro/releases/latest | jq -r '.tag_name | ltrimstr("v")')
+    KRO_VERSION=$(curl -sL \
+    https://api.github.com/repos/kubernetes-sigs/kro/releases/latest | \
+    jq -r '.tag_name | ltrimstr("v")'
+  )
     
     if [ -z "$KRO_VERSION" ] || [ "$KRO_VERSION" = "null" ]; then
         log_error "Failed to fetch KRO version from GitHub"
@@ -80,7 +83,10 @@ install_kro() {
     
     log_info "Fetching latest KRO version from GitHub..."
     local KRO_VERSION
-    KRO_VERSION=$(curl -sL https://api.github.com/repos/kro-run/kro/releases/latest | jq -r '.tag_name | ltrimstr("v")')
+    KRO_VERSION=$(curl -sL \
+    https://api.github.com/repos/kubernetes-sigs/kro/releases/latest | \
+    jq -r '.tag_name | ltrimstr("v")'
+  )
     
     if [ -z "$KRO_VERSION" ] || [ "$KRO_VERSION" = "null" ]; then
         log_error "Failed to fetch KRO version from GitHub"
@@ -94,7 +100,7 @@ install_kro() {
     helm registry logout ghcr.io >/dev/null 2>&1 || true
     
     # Install KRO using Helm with OCI registry
-    if helm install kro oci://ghcr.io/kro-run/kro/kro \
+    if helm install kro oci://registry.k8s.io/kro/charts/kro \
         --namespace "${KRO_NAMESPACE}" \
         --create-namespace \
         --version "${KRO_VERSION}"; then
