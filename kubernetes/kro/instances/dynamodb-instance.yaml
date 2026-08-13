@@ -1,9 +1,0 @@
-apiVersion: kro.run/v1alpha1
-kind: DynamoDBTable
-metadata:
-  name: game2048-leaderboard-dev
-  namespace: kro
-spec:
-  tableName: "game2048-leaderboard-dev"
-  region: "eu-west-1"
-  billingMode: "PAY_PER_REQUEST"

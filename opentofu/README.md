@@ -7,7 +7,10 @@ This directory contains OpenTofu configuration to provision core AWS infrastruct
 ### Core Infrastructure (OpenTofu)
 
 - **VPC** with public/private subnets across 2 AZs (using `terraform-aws-modules/vpc/aws`)
-- **EKS Cluster** with managed node groups (using `terraform-aws-modules/eks/aws`)
+- **EKS Cluster with Auto Mode** — AWS provisions and scales nodes, and manages
+  cluster DNS, pod/service networking, block storage and load balancing as core
+  components (using `terraform-aws-modules/eks/aws`)
+- **EKS Capabilities** — ACK and kro, managed by AWS outside the cluster
 - **IAM Roles & Policies** for secure access
 - **Security Groups** and networking
 
@@ -61,7 +64,7 @@ This script will:
 
    ```bash
    # Use the output command from tofu apply
-   CLUSTER_NAME=$(tofu output -raw eks_cluster_id)
+   CLUSTER_NAME=$(tofu output -raw eks_cluster_name)
    AWS_REGION=$(tofu output -raw aws_region)
    aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME
    ```
@@ -74,9 +77,13 @@ This script will:
 | `project_name` | Project name | `game2048` |
 | `environment` | Environment (dev/staging/prod) | `dev` |
 | `vpc_cidr` | VPC CIDR block | `172.16.0.0/16` |
-| `eks_cluster_version` | EKS Kubernetes version | `1.28` |
-| `eks_node_instance_types` | EC2 instance types for nodes | `["m5.xlarge"]` |
-| `eks_auth_users` | Additional IAM users for cluster access | `[]` |
+| `eks_cluster_version` | EKS Kubernetes version | `1.33` |
+| `eks_auto_mode_node_pools` | Auto Mode node pools to enable | `["system", "general-purpose"]` |
+| `ack_iam_role_policies` | Policies on the ACK capability role ⚠️ | `AdministratorAccess` |
+| `kro_access_policy_arn` | Access policy for the kro capability ⚠️ | `AmazonEKSClusterAdminPolicy` |
+| `eks_access_entries` | EKS access entries for cluster access | `{}` |
+| `cluster_endpoint_public_access` | Expose the API server publicly | `true` |
+| `cluster_endpoint_public_access_cidrs` | CIDRs allowed to reach the API server | `["0.0.0.0/0"]` |
 
 ## 🔧 Module Usage
 
@@ -89,23 +96,31 @@ This script will:
 ### EKS Module  
 
 - **Source**: `terraform-aws-modules/eks/aws`
-- **Features**: Managed node groups, OIDC provider, aws-auth configmap
-- **Customization**: Modify `eks.tf` for different node configurations
+- **Features**: Auto Mode compute/networking/storage/load balancing, OIDC
+  provider for IRSA, access entries, ACK and kro capabilities
+- **Customization**: Modify `eks.tf`; add a custom NodePool if you need
+  specific instance shapes
 
 ## 🔐 Security Features
 
-- **Private subnets** for EKS worker nodes
+- **Private subnets** for EKS Auto Mode nodes
 - **IAM roles** with least privilege access
 - **OIDC provider** for service account authentication
 - **VPC security groups** for network isolation
-- **Managed node groups** with automatic updates
+- **Auto Mode nodes** on immutable Bottlerocket AMIs, replaced at most every
+  21 days, with no SSH/SSM access
 
 ## 💰 Cost Optimization
 
-- **Managed EKS** with optimized instance types
-- **Single NAT gateway per AZ** for high availability
-- **On-demand instances** with auto-scaling
+- **EKS Auto Mode** right-sizes and consolidates nodes automatically, and
+  scales to zero nodes when nothing is scheduled
+- **Single NAT gateway per AZ** for high availability (two NAT gateways —
+  set `single_nat_gateway = true` in `vpc.tf` to halve that cost)
 - **Proper resource tagging** for cost allocation
+
+> Auto Mode adds a management fee per vCPU-hour on top of EC2, and each EKS
+> Capability bills hourly plus per managed resource. Worth knowing before
+> leaving a demo cluster running.
 
 ## 🧹 Cleanup
 
@@ -140,82 +155,78 @@ tofu apply -var-file="prod.tfvars"
 
 ### Adding Custom Users
 
+Cluster access uses EKS **access entries**. The legacy `aws-auth` ConfigMap
+approach was removed in EKS module v21.
+
 ```hcl
-eks_auth_users = [
-  {
-    userarn  = "arn:aws:iam::123456789012:user/developer"
-    username = "developer"
-    groups   = ["system:masters"]
+eks_access_entries = {
+  developer = {
+    principal_arn = "arn:aws:iam::123456789012:user/developer"
+    policy_associations = {
+      admin = {
+        policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        access_scope = { type = "cluster" }
+      }
+    }
   }
-]
+}
 ```
 
-## 🎮 ACK Controller Management
+## 🧩 EKS Capabilities (ACK and kro)
 
-### Install ACK Controllers
+ACK and kro are **EKS Capabilities**, not in-cluster installs. They are declared
+in `eks.tf` as `module.ack` and `module.kro`, run on AWS-managed infrastructure
+outside your cluster, and install their own CRDs. There is nothing to helm
+install, scale or patch — and no controller pods consuming node capacity.
+
+### Enable / disable
+
+They are created and destroyed with the rest of the stack:
 
 ```bash
-# Get cluster details from OpenTofu output
-CLUSTER_NAME=$(tofu output -raw eks_cluster_id)
+tofu apply     # enables the ACK and kro capabilities
+tofu destroy   # removes them
+```
+
+To drop one, delete its module block (and, for kro, the
+`aws_eks_access_policy_association.kro` resource) and re-apply.
+
+### Check status
+
+```bash
+CLUSTER_NAME=$(tofu output -raw eks_cluster_name)
 AWS_REGION=$(tofu output -raw aws_region)
 
-# Install required controllers
-../scripts/ack_controller_install.sh iam $CLUSTER_NAME $AWS_REGION
-../scripts/ack_controller_install.sh dynamodb $CLUSTER_NAME $AWS_REGION
-../scripts/ack_controller_install.sh s3 $CLUSTER_NAME $AWS_REGION
+aws eks list-capabilities --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION"
+aws eks describe-capability --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+  --capability-name <name> --query 'capability.status'
 ```
 
-### Remove ACK Controllers
+### ⚠️ Permissions warning
 
-```bash
-# Remove DynamoDB controller
-../scripts/ack_controller_cleanup.sh dynamodb
+The defaults in `variables.tf` are the AWS getting-started ones and are
+deliberately broad:
 
-# Dry-run mode (preview only)
-../scripts/ack_controller_cleanup.sh s3 --dry-run
+| Variable | Default | What it grants |
+|----------|---------|----------------|
+| `ack_iam_role_policies` | `AdministratorAccess` | ACK can create/modify/delete **any AWS resource** in the account |
+| `kro_access_policy_arn` | `AmazonEKSClusterAdminPolicy` | kro can create **any Kubernetes resource** in the cluster |
 
-# Force mode (no confirmations)
-../scripts/ack_controller_cleanup.sh rds --force
-```
+Together these mean **anyone who can create a Kubernetes resource in this
+cluster can create arbitrary AWS resources**. That is acceptable for a demo and
+nothing else. Before real use:
 
-### Available ACK Services
+- scope `ack_iam_role_policies` to IAM, DynamoDB and S3 only — the services
+  these RGDs actually touch — or adopt ACK **IAM Role Selectors** for
+  per-namespace least privilege
+- replace `kro_access_policy_arn` with custom RBAC covering only the kinds your
+  ResourceGraphDefinitions emit
 
-- **dynamodb** - DynamoDB tables and indexes
-- **s3** - S3 buckets and policies
-- **rds** - RDS databases and clusters
-- **ec2** - EC2 instances and security groups
-- **iam** - IAM roles and policies
-- **lambda** - Lambda functions
-- **sqs** - SQS queues
-- **sns** - SNS topics
+### Deletion behaviour
 
-## 🎯 KRO Management
-
-### Install KRO
-
-```bash
-# Install KRO using Helm (recommended)
-../scripts/kro_install.sh
-
-# Install with custom cluster/region
-../scripts/kro_install.sh my-cluster us-west-2
-```
-
-### Remove KRO
-
-```bash
-# Remove KRO (preserves CRDs and custom resources)
-../scripts/kro_uninstall.sh
-
-# Dry-run mode (preview only)
-../scripts/kro_uninstall.sh --dry-run
-
-# Force mode (no confirmations)
-../scripts/kro_uninstall.sh --force
-
-# Remove everything including CRDs (destructive!)
-../scripts/kro_uninstall.sh --remove-crds --force
-```
+Capabilities are created with `delete_propagation_policy = RETAIN`, so AWS
+resources ACK created (DynamoDB tables, S3 buckets, IAM roles) **survive**
+removal of the capability. Clean them up separately.
 
 ### KRO Features
 
@@ -241,7 +252,7 @@ See the main [README.md](../README.md#-installation-guide) for the complete step
 
 This infrastructure supports the complete 2048 game application with:
 
-- ✅ **Scalable EKS cluster** with managed node groups
+- ✅ **Scalable EKS cluster** with Auto Mode
 - ✅ **DynamoDB integration** for persistent leaderboard
 - ✅ **IAM roles with IRSA** for secure AWS access
 - ✅ **ALB ingress** for external access

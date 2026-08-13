@@ -11,17 +11,35 @@ environment  = "dev"
 vpc_cidr = "172.16.0.0/16"
 
 # EKS Configuration
-eks_cluster_version        = "1.28"
-eks_node_instance_types    = ["m5.xlarge"]
-eks_node_desired_capacity  = 2
-eks_node_max_capacity      = 4
-eks_node_min_capacity      = 1
+eks_cluster_version        = "1.33"
+# EKS Auto Mode manages nodes for you — there are no instance types or
+# min/max/desired counts to configure.
+eks_auto_mode_node_pools = ["system", "general-purpose"]
 
-# EKS Additional Users (optional)
-eks_auth_users = [
-  # {
-  #   userarn  = "arn:aws:iam::123456789012:user/developer"
-  #   username = "developer"
-  #   groups   = ["system:masters"]
+# EKS Capabilities.
+# WARNING: AdministratorAccess lets ACK manage ANY AWS resource in the account,
+# and cluster-admin lets kro create any Kubernetes resource. Both are the AWS
+# getting-started defaults. Scope them down for anything beyond a demo.
+ack_iam_role_policies = {
+  AdministratorAccess = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+kro_access_policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+# API server exposure.
+# The default below allows the whole internet to reach the Kubernetes API.
+# Replace it with your own egress ranges, e.g. ["203.0.113.10/32"].
+cluster_endpoint_public_access       = true
+cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
+
+# EKS access entries (optional). Replaces the legacy aws-auth ConfigMap.
+eks_access_entries = {
+  # developer = {
+  #   principal_arn = "arn:aws:iam::123456789012:user/developer"
+  #   policy_associations = {
+  #     admin = {
+  #       policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+  #       access_scope = { type = "cluster" }
+  #     }
+  #   }
   # }
-]
+}

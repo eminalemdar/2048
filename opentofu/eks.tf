@@ -1,215 +1,131 @@
 # EKS using terraform-aws-modules/eks/aws
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
+  version = "~> 21.0"
 
-  cluster_name    = local.name
-  cluster_version = var.eks_cluster_version
+  # v21 dropped the `cluster_` prefix from most inputs.
+  name               = local.name
+  kubernetes_version = var.eks_cluster_version
 
-  vpc_id                         = module.vpc.vpc_id
-  subnet_ids                     = module.vpc.private_subnets
-  cluster_endpoint_public_access = true
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  # The API endpoint defaults to being reachable from anywhere. Restrict
+  # cluster_endpoint_public_access_cidrs (or disable public access entirely)
+  # before treating this cluster as anything other than disposable.
+  endpoint_public_access       = var.cluster_endpoint_public_access
+  endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
+  endpoint_private_access      = true
 
   # Cluster configuration
   enable_cluster_creator_admin_permissions = true
-  cluster_enabled_log_types                = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  enabled_log_types                        = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
   create_cloudwatch_log_group              = false
-  create_cluster_security_group            = false
-  create_node_security_group               = false
 
-  # EKS Managed Node Groups
-  eks_managed_node_groups = {
-    main = {
-      name = "${local.name}-nodes"
-
-      instance_types = var.eks_node_instance_types
-
-      min_size     = var.eks_node_min_capacity
-      max_size     = var.eks_node_max_capacity
-      desired_size = var.eks_node_desired_capacity
-
-      create_launch_template = true
-      disk_size              = 50
-      ami_type               = "AL2023_x86_64_STANDARD"
-      capacity_type          = "ON_DEMAND"
-
-      # Node group scaling configuration
-      update_config = {
-        max_unavailable = 1
-      }
-
-      # Kubernetes labels
-      labels = {
-        Environment = var.environment
-        NodeGroup   = "main"
-      }
-
-      tags = local.common_tags
-    }
+  ##############################################################################
+  # EKS Auto Mode
+  #
+  # Enabling compute_config also switches on Auto Mode's managed block storage
+  # (EBS CSI) and load balancing (ALB/NLB) — the module derives all three from
+  # this one input. That is why there are no managed node groups and no
+  # coredns / kube-proxy / vpc-cni add-ons below: Auto Mode ships compute
+  # autoscaling, pod and service networking, cluster DNS, block storage and
+  # load balancing as core components rather than as add-ons.
+  ##############################################################################
+  compute_config = {
+    enabled    = true
+    node_pools = var.eks_auto_mode_node_pools
   }
 
-  # EKS Addons
-  cluster_addons = {
-    coredns = {
-      most_recent = true
-      timeouts = {
-        create = "25m"
-        delete = "10m"
-      }
-      configuration_values = jsonencode({
-        resources = {
-          limits = {
-            cpu    = "0.25"
-            memory = "256M"
-          }
-          requests = {
-            cpu    = "0.25"
-            memory = "256M"
-          }
-        }
-      })
-    }
-    kube-proxy = {
-      most_recent = true
-    }
-    vpc-cni = {
-      preserve    = true
-      most_recent = true
-      timeouts = {
-        create = "25m"
-        delete = "10m"
-      }
-      configuration_values = jsonencode({
-        env = {
-          ENABLE_PREFIX_DELEGATION = "true"
-          WARM_PREFIX_TARGET       = "1"
-        }
-        enableNetworkPolicy = "true"
-      })
-    }
-  }
+  # OIDC Identity provider. Kept because the game backend still reaches
+  # DynamoDB through IRSA (see kubernetes/kro/iam-rgd.yaml).
+  identity_providers = {}
 
-  # Access entries will be managed separately if needed
-
-  # OIDC Identity provider
-  cluster_identity_providers = {}
-
-  # Extend cluster security group rules
-  cluster_security_group_additional_rules = {
-    ingress_nodes_ephemeral_ports_tcp = {
-      description                = "Nodes on ephemeral ports"
-      protocol                   = "tcp"
-      from_port                  = 1025
-      to_port                    = 65535
-      type                       = "ingress"
-      source_node_security_group = true
-    }
-  }
-
-  # Extend node-to-node security group rules
-  node_security_group_additional_rules = {
-    ingress_self_all = {
-      description = "Node to node all ports/protocols"
-      protocol    = "-1"
-      from_port   = 0
-      to_port     = 0
-      type        = "ingress"
-      self        = true
-    }
-  }
+  # IAM principals granted access to the cluster. v21 removed the aws-auth
+  # ConfigMap submodule entirely; access entries are now the only mechanism.
+  access_entries = var.eks_access_entries
 
   tags = local.common_tags
 }
-# EKS Blueprints Addons
-module "eks_blueprints_addons" {
-  source  = "aws-ia/eks-blueprints-addons/aws"
-  version = "~> 1.0"
 
-  cluster_name      = module.eks.cluster_name
-  cluster_endpoint  = module.eks.cluster_endpoint
-  cluster_version   = module.eks.cluster_version
-  oidc_provider_arn = module.eks.oidc_provider_arn
+################################################################################
+# EKS Capabilities — AWS-managed platform components that run outside the
+# cluster, on EKS-managed infrastructure rather than on your nodes.
+#
+# These replace the self-managed installs this project used to need:
+#   scripts/ack_controller_install.sh  -> module.ack
+#   scripts/kro_install.sh             -> module.kro
+################################################################################
 
-  # AWS Load Balancer Controller
-  enable_aws_load_balancer_controller = true
-  aws_load_balancer_controller = {
-    chart_version = "1.6.2"
-    repository    = "https://aws.github.io/eks-charts"
-    namespace     = "kube-system"
-    values = [
-      yamlencode({
-        clusterName = module.eks.cluster_name
-        serviceAccount = {
-          create = true
-          name   = "aws-load-balancer-controller"
-        }
-      })
-    ]
-  }
+# AWS Controllers for Kubernetes: manage AWS resources through Kubernetes APIs.
+# The RGDs under kubernetes/kro/ create IAM roles, DynamoDB tables and S3
+# buckets through the CRDs this capability installs.
+module "ack" {
+  source  = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.0"
 
-  # Metrics Server
-  enable_metrics_server = false
+  type         = "ACK"
+  cluster_name = module.eks.cluster_name
 
-  # NGINX Ingress Controller
-  enable_ingress_nginx = true
-  ingress_nginx = {
-    chart_version = "4.8.3"
-    repository    = "https://kubernetes.github.io/ingress-nginx"
-    namespace     = "ingress-nginx"
-    values = [
-      yamlencode({
-        controller = {
-          service = {
-            type = "LoadBalancer"
-            annotations = {
-              "service.beta.kubernetes.io/aws-load-balancer-type"                              = "nlb"
-              "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
-              "service.beta.kubernetes.io/aws-load-balancer-backend-protocol"                  = "tcp"
-            }
-          }
-          config = {
-            "use-proxy-protocol" = "true"
-          }
-          metrics = {
-            enabled = true
-            serviceMonitor = {
-              enabled = false
-            }
-          }
-          resources = {
-            limits = {
-              cpu    = "500m"
-              memory = "512Mi"
-            }
-            requests = {
-              cpu    = "250m"
-              memory = "256Mi"
-            }
-          }
-        }
-      })
-    ]
-  }
+  # ⚠️  SECURITY WARNING ⚠️
+  # The default is AdministratorAccess, which is what the AWS getting-started
+  # guide prescribes and what keeps every RGD in this repo working. It also
+  # means ACK can create, modify and delete ANY AWS resource in this account.
+  #
+  # Combined with the kro access policy below, anyone who can create a
+  # Kubernetes resource in this cluster can create arbitrary AWS resources.
+  #
+  # For anything beyond a demo, scope var.ack_iam_role_policies down to the
+  # services actually used here (IAM, DynamoDB, S3), or switch to ACK's IAM
+  # Role Selectors for per-namespace least privilege.
+  iam_role_policies = var.ack_iam_role_policies
 
   tags = local.common_tags
-
-  depends_on = [
-    module.eks.eks_managed_node_groups,
-    module.eks.cluster_addons
-  ]
 }
-# AWS Auth ConfigMap using dedicated module
-module "eks_aws_auth" {
-  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
-  version = "~> 20.0"
 
-  manage_aws_auth_configmap = true
+# Kube Resource Orchestrator: composes Kubernetes and AWS resources into the
+# higher-level APIs defined in kubernetes/kro/*-rgd.yaml.
+#
+# kro needs no IAM policies of its own: it never calls AWS APIs, it only
+# creates Kubernetes objects.
+module "kro" {
+  source  = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.0"
 
-  aws_auth_roles = [] # Add your IAM roles here if needed
+  type         = "KRO"
+  cluster_name = module.eks.cluster_name
 
-  aws_auth_users = var.eks_auth_users
-
-  aws_auth_accounts = []
-
-  depends_on = [module.eks]
+  tags = local.common_tags
 }
+
+# Creating the kro capability grants it an access entry carrying
+# AmazonEKSKROPolicy, which covers ResourceGraphDefinitions and their instances
+# — deliberately NOT the resources an RGD actually produces. Without a broader
+# policy an RGD registers its custom API but instantiating one silently creates
+# nothing.
+#
+# ⚠️  SECURITY WARNING ⚠️
+# The default is AmazonEKSClusterAdminPolicy, which AWS recommends for getting
+# started and covers any RGD this repo defines (Namespaces, Deployments,
+# Services, ServiceAccounts, Ingresses and the ACK *.services.k8s.aws CRDs).
+# It is cluster-admin. Replace it with custom RBAC scoped to the kinds your
+# RGDs actually emit before using this beyond a demo.
+resource "aws_eks_access_policy_association" "kro" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.kro.iam_role_arn
+  policy_arn    = var.kro_access_policy_arn
+
+  access_scope {
+    type = "cluster"
+  }
+}
+
+# NOTE: the aws-auth ConfigMap module that used to live here has been removed.
+# EKS module v21 dropped that submodule, and EKS itself treats the aws-auth
+# ConfigMap as legacy. Cluster access is now granted through the
+# `access_entries` input on module.eks above — see var.eks_access_entries.
+#
+# NOTE: the eks-blueprints-addons module has also been removed. It installed
+# the self-managed AWS Load Balancer Controller and ingress-nginx; Auto Mode
+# provides load balancing natively. See kubernetes/auto-mode-ingressclass.yaml
+# for the IngressClass that replaces them.

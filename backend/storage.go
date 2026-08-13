@@ -24,8 +24,13 @@ var (
 )
 
 // dynamoTimeout bounds every DynamoDB call so a stalled request cannot pin a
-// handler goroutine indefinitely.
-const dynamoTimeout = 10 * time.Second
+// handler goroutine indefinitely. Loading the leaderboard may paginate, so it
+// gets a longer budget than a single-item read or write.
+const (
+	dynamoTimeout     = 10 * time.Second
+	dynamoLoadTimeout = 30 * time.Second
+	s3Timeout         = 30 * time.Second
+)
 
 // errNoDynamoDB is returned when the AWS clients were never initialised —
 // which happens when AWS_REGION is unset. Callers surface this as a 500
@@ -34,6 +39,18 @@ var errNoDynamoDB = errors.New("DynamoDB client not initialized: set AWS_REGION 
 
 // errAlreadySubmitted signals that a game's score has already been recorded.
 var errAlreadySubmitted = errors.New("score already submitted for this game")
+
+const (
+	// leaderboardIndexName is the GSI used to read scores in rank order.
+	leaderboardIndexName = "ScoreIndex"
+
+	// leaderboardPartitionKey / leaderboardPartitionValue form the constant
+	// partition every leaderboard entry is written into. DynamoDB can only
+	// Query within a single partition, so a shared key is what allows the
+	// index to return scores sorted without scanning the whole table.
+	leaderboardPartitionKey   = "leaderboard"
+	leaderboardPartitionValue = "global"
+)
 
 // initStorage initializes storage clients based on environment variables
 func initStorage() {
@@ -107,79 +124,88 @@ func initAWSClients() {
 }
 
 // S3 Storage Implementation
-func (l *Leaderboard) saveToS3() {
-	if s3Client == nil {
-		return
+//
+// S3 holds a JSON snapshot of the whole leaderboard. It serves two purposes:
+// a durable backup written after every accepted score, and a read fallback for
+// when DynamoDB cannot be reached.
+
+const s3LeaderboardKey = "leaderboard/scores.json"
+
+// s3BackupEnabled reports whether the S3 backup path is configured. Both the
+// flag and a bucket are required, so the feature is opt-in.
+func s3BackupEnabled() bool {
+	return s3Client != nil &&
+		os.Getenv("S3_ENABLED") == "true" &&
+		os.Getenv("S3_BUCKET") != ""
+}
+
+// saveToS3 writes the supplied snapshot to S3.
+//
+// The caller passes the entries rather than reading l.entries directly, so the
+// snapshot is taken under the lock and this function never touches shared state.
+func (l *Leaderboard) saveToS3(ctx context.Context, entries []LeaderboardEntry) error {
+	if !s3BackupEnabled() {
+		return nil
 	}
 
 	bucket := os.Getenv("S3_BUCKET")
-	if bucket == "" {
-		log.Println("S3_BUCKET not configured")
-		return
-	}
 
-	data, err := json.Marshal(l.entries)
+	data, err := json.Marshal(entries)
 	if err != nil {
-		log.Printf("Error marshaling leaderboard for S3: %v", err)
-		return
+		return fmt.Errorf("failed to marshal leaderboard for S3: %w", err)
 	}
 
-	key := "leaderboard/scores.json"
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s3Timeout)
 	defer cancel()
 
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
-		Key:         aws.String(key),
+		Key:         aws.String(s3LeaderboardKey),
 		Body:        strings.NewReader(string(data)),
 		ContentType: aws.String("application/json"),
 	})
-
 	if err != nil {
-		log.Printf("Error saving to S3: %v", err)
-		return
+		return fmt.Errorf("failed to write s3://%s/%s: %w", bucket, s3LeaderboardKey, err)
 	}
 
-	log.Printf("Leaderboard saved to S3: s3://%s/%s", bucket, key)
+	log.Printf("Leaderboard backed up to s3://%s/%s (%d entries)", bucket, s3LeaderboardKey, len(entries))
+	return nil
 }
 
-func (l *Leaderboard) loadFromS3() {
+// loadFromS3 restores the leaderboard from the S3 snapshot.
+func (l *Leaderboard) loadFromS3() error {
 	if s3Client == nil {
-		return
+		return errors.New("S3 client not initialized")
 	}
 
 	bucket := os.Getenv("S3_BUCKET")
 	if bucket == "" {
-		return
+		return errors.New("S3_BUCKET not configured")
 	}
 
-	key := "leaderboard/scores.json"
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
 	defer cancel()
 
 	result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(s3LeaderboardKey),
 	})
-
 	if err != nil {
-		log.Printf("Error loading from S3: %v", err)
-		return
+		return fmt.Errorf("failed to read s3://%s/%s: %w", bucket, s3LeaderboardKey, err)
 	}
 	defer result.Body.Close()
 
 	var entries []LeaderboardEntry
-	err = json.NewDecoder(result.Body).Decode(&entries)
-	if err != nil {
-		log.Printf("Error decoding S3 data: %v", err)
-		return
+	if err := json.NewDecoder(result.Body).Decode(&entries); err != nil {
+		return fmt.Errorf("failed to decode S3 leaderboard snapshot: %w", err)
 	}
 
 	l.mu.Lock()
 	l.entries = entries
 	l.mu.Unlock()
 
-	log.Printf("Leaderboard loaded from S3: %d entries", len(entries))
+	log.Printf("Leaderboard loaded from S3 fallback: %d entries", len(entries))
+	return nil
 }
 
 // DynamoDB Storage Implementation - Save individual entry
@@ -188,10 +214,7 @@ func (l *Leaderboard) saveEntryToDynamoDB(ctx context.Context, entry Leaderboard
 		return errNoDynamoDB
 	}
 
-	tableName := os.Getenv("DYNAMODB_TABLE")
-	if tableName == "" {
-		tableName = "game2048-leaderboard"
-	}
+	tableName := leaderboardTableName()
 
 	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
 	defer cancel()
@@ -199,6 +222,13 @@ func (l *Leaderboard) saveEntryToDynamoDB(ctx context.Context, entry Leaderboard
 	item := map[string]types.AttributeValue{
 		"id": &types.AttributeValueMemberS{
 			Value: entry.ID,
+		},
+		// Constant partition key for the ScoreIndex GSI. A Query requires an
+		// equality condition on the partition key, so every leaderboard entry
+		// shares one value; `score` is the sort key, which is what makes
+		// "top N by score" a Query instead of a full table Scan.
+		leaderboardPartitionKey: &types.AttributeValueMemberS{
+			Value: leaderboardPartitionValue,
 		},
 		"name": &types.AttributeValueMemberS{
 			Value: entry.Name,
@@ -234,93 +264,111 @@ func (l *Leaderboard) saveEntryToDynamoDB(ctx context.Context, entry Leaderboard
 	return nil
 }
 
-// Legacy function - now just saves individual entries
-func (l *Leaderboard) saveToDynamoDB() {
-	// This function is now deprecated - we save entries individually
-	log.Printf("saveToDynamoDB called - entries are now saved individually")
+// unmarshalEntry converts a DynamoDB item into a LeaderboardEntry.
+func unmarshalEntry(item map[string]types.AttributeValue) LeaderboardEntry {
+	var entry LeaderboardEntry
+
+	if attr, ok := item["id"].(*types.AttributeValueMemberS); ok {
+		entry.ID = attr.Value
+	}
+	if attr, ok := item["playerId"].(*types.AttributeValueMemberS); ok {
+		entry.PlayerID = attr.Value
+	}
+	if attr, ok := item["name"].(*types.AttributeValueMemberS); ok {
+		entry.Name = attr.Value
+	}
+	if attr, ok := item["score"].(*types.AttributeValueMemberN); ok {
+		if score, err := strconv.Atoi(attr.Value); err == nil {
+			entry.Score = score
+		}
+	}
+	if attr, ok := item["duration"].(*types.AttributeValueMemberN); ok {
+		if duration, err := strconv.Atoi(attr.Value); err == nil {
+			entry.Duration = duration
+		}
+	}
+	if attr, ok := item["moves"].(*types.AttributeValueMemberN); ok {
+		if moves, err := strconv.Atoi(attr.Value); err == nil {
+			entry.Moves = moves
+		}
+	}
+	if attr, ok := item["timestamp"].(*types.AttributeValueMemberS); ok {
+		if timestamp, err := time.Parse(time.RFC3339, attr.Value); err == nil {
+			entry.Timestamp = timestamp
+		}
+	}
+
+	return entry
 }
 
-func (l *Leaderboard) loadFromDynamoDB() {
+// loadFromDynamoDB replaces the in-memory leaderboard from DynamoDB.
+//
+// This Queries the ScoreIndex GSI rather than Scanning the table. The previous
+// Scan read every item in the table on every refresh AND was unpaginated, so it
+// silently dropped everything past the first 1 MB of results.
+func (l *Leaderboard) loadFromDynamoDB() error {
 	if dynamodbClient == nil {
-		return
+		return errNoDynamoDB
 	}
 
-	tableName := os.Getenv("DYNAMODB_TABLE")
-	if tableName == "" {
-		tableName = "game2048-leaderboard"
-	}
+	tableName := leaderboardTableName()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dynamoLoadTimeout)
 	defer cancel()
 
-	// Scan all items from the table
-	result, err := dynamodbClient.Scan(ctx, &dynamodb.ScanInput{
-		TableName: aws.String(tableName),
-	})
+	var entries []LeaderboardEntry
+	var startKey map[string]types.AttributeValue
 
-	if err != nil {
-		log.Printf("Error loading from DynamoDB: %v", err)
-		return
+	for {
+		result, err := dynamodbClient.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(tableName),
+			IndexName:              aws.String(leaderboardIndexName),
+			KeyConditionExpression: aws.String("#pk = :pk"),
+			ExpressionAttributeNames: map[string]string{
+				"#pk": leaderboardPartitionKey,
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pk": &types.AttributeValueMemberS{Value: leaderboardPartitionValue},
+			},
+			// Descending, so the highest scores arrive first.
+			ScanIndexForward:  aws.Bool(false),
+			ExclusiveStartKey: startKey,
+		})
+		if err != nil {
+			log.Printf("Error querying %s: %v", leaderboardIndexName, err)
+			return fmt.Errorf("failed to query leaderboard index: %w", err)
+		}
+
+		for _, item := range result.Items {
+			entries = append(entries, unmarshalEntry(item))
+		}
+
+		// Stop once every page has been read, or the in-memory cap is reached.
+		startKey = result.LastEvaluatedKey
+		if len(startKey) == 0 || len(entries) >= maxCachedEntries {
+			break
+		}
 	}
 
-	var entries []LeaderboardEntry
-	for _, item := range result.Items {
-		var entry LeaderboardEntry
-
-		// Extract ID
-		if idAttr, ok := item["id"].(*types.AttributeValueMemberS); ok {
-			entry.ID = idAttr.Value
-		}
-
-		// Extract PlayerID
-		if playerIdAttr, ok := item["playerId"].(*types.AttributeValueMemberS); ok {
-			entry.PlayerID = playerIdAttr.Value
-		}
-
-		// Extract Name
-		if nameAttr, ok := item["name"].(*types.AttributeValueMemberS); ok {
-			entry.Name = nameAttr.Value
-		}
-
-		// Extract Score
-		if scoreAttr, ok := item["score"].(*types.AttributeValueMemberN); ok {
-			if score, err := strconv.Atoi(scoreAttr.Value); err == nil {
-				entry.Score = score
-			}
-		}
-
-		// Extract Duration
-		if durationAttr, ok := item["duration"].(*types.AttributeValueMemberN); ok {
-			if duration, err := strconv.Atoi(durationAttr.Value); err == nil {
-				entry.Duration = duration
-			}
-		}
-
-		// Extract Moves
-		if movesAttr, ok := item["moves"].(*types.AttributeValueMemberN); ok {
-			if moves, err := strconv.Atoi(movesAttr.Value); err == nil {
-				entry.Moves = moves
-			}
-		}
-
-		// Extract Timestamp
-		if timestampAttr, ok := item["timestamp"].(*types.AttributeValueMemberS); ok {
-			if timestamp, err := time.Parse(time.RFC3339, timestampAttr.Value); err == nil {
-				entry.Timestamp = timestamp
-			}
-		}
-
-		entries = append(entries, entry)
+	if len(entries) > maxCachedEntries {
+		entries = entries[:maxCachedEntries]
 	}
 
 	l.mu.Lock()
 	l.entries = entries
 	l.mu.Unlock()
 
-	log.Printf("Leaderboard loaded from DynamoDB: %d entries", len(entries))
+	log.Printf("Leaderboard loaded from DynamoDB (%s): %d entries", leaderboardIndexName, len(entries))
+	return nil
 }
 
-// clearDynamoDBTable function removed - we now use append-only approach
+// leaderboardTableName resolves the leaderboard table once, in one place.
+func leaderboardTableName() string {
+	if name := os.Getenv("DYNAMODB_TABLE"); name != "" {
+		return name
+	}
+	return "game2048-leaderboard"
+}
 
 // sessionsTableName resolves the game-sessions table once, in one place.
 func sessionsTableName() string {

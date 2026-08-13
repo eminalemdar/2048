@@ -34,7 +34,7 @@ tofu apply tfplan
 
 # Update kubeconfig
 echo "⚙️  Updating kubeconfig..."
-CLUSTER_NAME=$(tofu output -raw eks_cluster_id)
+CLUSTER_NAME=$(tofu output -raw eks_cluster_name)
 AWS_REGION=$(tofu output -raw aws_region)
 
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"

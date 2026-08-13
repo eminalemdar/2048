@@ -1,0 +1,17 @@
+# Namespace holding the kro instance resources (DynamoDBTable, GameSessionsTable,
+# IAMRoleForServiceAccount, Game2048Application).
+#
+# This used to be created as a side effect of `helm install --create-namespace`
+# in kro_install.sh. kro is now an EKS Capability that runs outside the cluster
+# and creates no namespace of its own, so it has to be declared here — without
+# it every instance fails with `namespaces "kro" not found`.
+#
+# Note the ResourceGraphDefinitions themselves are cluster-scoped; only their
+# instances live in this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kro
+  labels:
+    app.kubernetes.io/name: kro
+    app.kubernetes.io/component: platform

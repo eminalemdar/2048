@@ -11,11 +11,49 @@ spec:
       # Role configuration
       roleName: string
       serviceAccountName: string
+      # Namespace of the ServiceAccount the role trusts. Used only to build the
+      # trust policy's `sub` condition — this namespace does not have to exist
+      # when the role is created.
       serviceAccountNamespace: string
       region: string | default="eu-west-1"
 
+      # Namespace the ACK Role custom resource itself is created in.
+      #
+      # Deliberately separate from serviceAccountNamespace: the IAM role is a
+      # global AWS resource, so co-locating its CR with the application
+      # namespace only created an ordering dependency — the role could not be
+      # created until the application namespace existed, but the application
+      # needs the role. Keeping it beside the other platform resources removes
+      # that cycle.
+      resourceNamespace: string | default="kro"
+
+      # AWS account that owns the role and the DynamoDB tables. Required, with
+      # no default, so a deployment can never silently target someone else's
+      # account.
+      accountId: string
+
+      # The cluster's IAM OIDC provider ID — the trailing path segment of the
+      # cluster's OIDC issuer URL. This is generated per cluster, so it MUST be
+      # supplied for the cluster being deployed to; a value copied from another
+      # cluster produces a trust policy that can never match.
+      #   aws eks describe-cluster --name <cluster> \
+      #     --query 'cluster.identity.oidc.issuer' --output text
+      oidcProviderId: string
+
+      # Tables the role is granted access to. These must match the names the
+      # application actually uses, or the backend gets AccessDenied at runtime.
+      leaderboardTableName: string | default="game2048-leaderboard-dev"
+      sessionsTableName: string | default="game2048-sessions-dev"
+
+      # Bucket holding the leaderboard backup snapshot. The role is granted
+      # read/write on a single object prefix, not the whole bucket.
+      backupBucketName: string | default="game2048-backup-dev-unique-12345"
+
+    # Status fields must be CEL expressions naming where the value comes from.
+    # A bare type (`roleArn: string`) is rejected by kro with
+    # "status fields without expressions are not supported".
     status:
-      roleArn: string
+      roleArn: ${iamRole.status.ackResourceMetadata.arn}
 
   resources:
     # IAM Role with inline DynamoDB policy
@@ -25,7 +63,7 @@ spec:
         kind: Role
         metadata:
           name: ${schema.spec.roleName}
-          namespace: ${schema.spec.serviceAccountNamespace}
+          namespace: ${schema.spec.resourceNamespace}
           labels:
             app.kubernetes.io/managed-by: kro
         spec:
@@ -37,12 +75,12 @@ spec:
                 {
                   "Effect": "Allow",
                   "Principal": {
-                    "Federated": "arn:aws:iam::247747705325:oidc-provider/oidc.eks.eu-west-1.amazonaws.com/id/8518702A8AA2A3556B6C9D98155E6B89"
+                    "Federated": "arn:aws:iam::${schema.spec.accountId}:oidc-provider/oidc.eks.${schema.spec.region}.amazonaws.com/id/${schema.spec.oidcProviderId}"
                   },
                   "Action": "sts:AssumeRoleWithWebIdentity",
                   "Condition": {
                     "StringEquals": {
-                      "oidc.eks.eu-west-1.amazonaws.com/id/8518702A8AA2A3556B6C9D98155E6B89:sub": "system:serviceaccount:${schema.spec.serviceAccountNamespace}:${schema.spec.serviceAccountName}"
+                      "oidc.eks.${schema.spec.region}.amazonaws.com/id/${schema.spec.oidcProviderId}:sub": "system:serviceaccount:${schema.spec.serviceAccountNamespace}:${schema.spec.serviceAccountName}"
                     }
                   }
                 }
@@ -64,11 +102,25 @@ spec:
                       "dynamodb:Query"
                     ],
                     "Resource": [
-                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-sessions-dev",
-                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-leaderboard-dev",
-                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-sessions-dev/index/*",
-                      "arn:aws:dynamodb:${schema.spec.region}:247747705325:table/game2048-leaderboard-dev/index/*"
+                      "arn:aws:dynamodb:${schema.spec.region}:${schema.spec.accountId}:table/${schema.spec.sessionsTableName}",
+                      "arn:aws:dynamodb:${schema.spec.region}:${schema.spec.accountId}:table/${schema.spec.leaderboardTableName}",
+                      "arn:aws:dynamodb:${schema.spec.region}:${schema.spec.accountId}:table/${schema.spec.sessionsTableName}/index/*",
+                      "arn:aws:dynamodb:${schema.spec.region}:${schema.spec.accountId}:table/${schema.spec.leaderboardTableName}/index/*"
                     ]
+                  }
+                ]
+              }
+            S3BackupAccess: |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "s3:GetObject",
+                      "s3:PutObject"
+                    ],
+                    "Resource": "arn:aws:s3:::${schema.spec.backupBucketName}/leaderboard/*"
                   }
                 ]
               }

@@ -13,7 +13,7 @@ spec:
       namespace: string | default="game-2048"
 
       # Backend configuration
-      backendImage: string | default="emnalmdr/2048-backend:v6"
+      backendImage: string | default="emnalmdr/2048-backend:v7"
       backendReplicas: integer | default=2
       backendPort: integer | default=8000
 
@@ -21,14 +21,24 @@ spec:
       # frontendPort is the container port: the unprivileged nginx image runs
       # as uid 101 and cannot bind anything below 1024. Callers still reach the
       # Service on frontendServicePort.
-      frontendImage: string | default="emnalmdr/2048-frontend:v6"
+      frontendImage: string | default="emnalmdr/2048-frontend:v7"
       frontendReplicas: integer | default=2
       frontendPort: integer | default=8080
       frontendServicePort: integer | default=80
 
-      # DynamoDB configuration
-      tableName: string | default="game2048-leaderboard"
+      # DynamoDB configuration.
+      # Defaults match the tables the IAM role grants access to — a mismatch
+      # here surfaces as AccessDenied at runtime, not at deploy time.
+      tableName: string | default="game2048-leaderboard-dev"
+      sessionsTableName: string | default="game2048-sessions-dev"
+      # Bucket holding the leaderboard backup snapshot. Must match the bucket
+      # the backend IAM role is granted access to.
+      backupBucketName: string | default="game2048-backup-dev-unique-12345"
       region: string | default="eu-west-1"
+
+      # AWS account hosting the backend's IAM role. Required, with no default.
+      accountId: string
+      backendRoleName: string | default="game2048-backend-role"
 
       # Ingress configuration
       hostname: string | default="2048.local"
@@ -59,7 +69,7 @@ spec:
             app.kubernetes.io/component: backend
             app.kubernetes.io/managed-by: kro
           annotations:
-            eks.amazonaws.com/role-arn: arn:aws:iam::247747705325:role/game2048-backend-role
+            eks.amazonaws.com/role-arn: arn:aws:iam::${schema.spec.accountId}:role/${schema.spec.backendRoleName}
 
     # Backend Deployment
     - id: backendDeployment
@@ -112,7 +122,20 @@ spec:
                     - name: DYNAMODB_TABLE
                       value: ${schema.spec.tableName}
                     - name: GAME_SESSIONS_TABLE
-                      value: "game2048-sessions-dev"
+                      value: ${schema.spec.sessionsTableName}
+                    # Explicitly empty: the ALB serves the frontend and the API
+                    # from one origin, so no CORS headers are needed. Leaving
+                    # this unset would fall back to "*" and allow any site to
+                    # call the API from a browser.
+                    - name: CORS_ALLOWED_ORIGINS
+                      value: ""
+                    # S3 backup: a JSON snapshot of the leaderboard is written
+                    # after every accepted score, and read back if DynamoDB is
+                    # unreachable. Both variables are required to enable it.
+                    - name: S3_ENABLED
+                      value: "true"
+                    - name: S3_BUCKET
+                      value: ${schema.spec.backupBucketName}
                   resources:
                     requests:
                       memory: "64Mi"
@@ -267,7 +290,10 @@ spec:
             app.kubernetes.io/name: ${schema.spec.name}-ingress
             app.kubernetes.io/managed-by: kro
           annotations:
-            alb.ingress.kubernetes.io/scheme: internet-facing
+            # `scheme` is NOT set here: EKS Auto Mode takes it from the
+            # IngressClassParams referenced by the IngressClass (see
+            # kubernetes/auto-mode-ingressclass.yaml). The remaining
+            # per-Ingress annotations are still honoured by Auto Mode.
             alb.ingress.kubernetes.io/target-type: ip
             alb.ingress.kubernetes.io/healthcheck-path: /health
             alb.ingress.kubernetes.io/backend-protocol: HTTP

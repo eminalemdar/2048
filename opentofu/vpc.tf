@@ -1,7 +1,7 @@
 # VPC using terraform-aws-modules/vpc/aws
 module "vpc" {
-  source = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
 
   name = local.name
   cidr = local.vpc_cidr
@@ -10,9 +10,9 @@ module "vpc" {
   private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k)]
   public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 4)]
 
-  enable_nat_gateway = true
-  enable_vpn_gateway = false
-  single_nat_gateway = false
+  enable_nat_gateway     = true
+  enable_vpn_gateway     = false
+  single_nat_gateway     = false
   one_nat_gateway_per_az = true
 
   enable_dns_hostnames = true

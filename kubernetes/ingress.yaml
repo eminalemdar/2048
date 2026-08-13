@@ -8,43 +8,48 @@ metadata:
   annotations:
     # NOTE: no rewrite-target here. The backend serves its routes at their full
     # paths (/game/new, /leaderboard/top, ...), so rewriting would strip them.
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    #
+    # These are ALB annotations, handled by EKS Auto Mode's built-in load
+    # balancing. The `scheme` setting lives in the IngressClassParams in
+    # kubernetes/auto-mode-ingressclass.yaml, not here.
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
 spec:
-  ingressClassName: nginx
+  # Requires kubernetes/auto-mode-ingressclass.yaml to be applied first.
+  ingressClassName: alb
   rules:
-  - host: 2048.local
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: frontend-service
-            port:
-              number: 80
-      - path: /game
-        pathType: Prefix
-        backend:
-          service:
-            name: backend-service
-            port:
-              number: 8000
-      - path: /leaderboard
-        pathType: Prefix
-        backend:
-          service:
-            name: backend-service
-            port:
-              number: 8000
-      - path: /health
-        pathType: Exact
-        backend:
-          service:
-            name: backend-service
-            port:
-              number: 8000
+    # No host match: an internet-facing ALB is reached through its generated
+    # DNS name. The previous `host: 2048.local` rule only worked with a local
+    # nginx ingress controller and an /etc/hosts entry.
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
+          - path: /game
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 8000
+          - path: /leaderboard
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 8000
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 8000

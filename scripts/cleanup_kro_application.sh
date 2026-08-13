@@ -264,13 +264,15 @@ main() {
     
     echo ""
     log_info "The 2048 game application has been removed from your cluster."
-    log_info "KRO and ACK controllers are still installed and can be reused."
+    log_info "The kro and ACK capabilities remain enabled and can be reused."
     echo ""
-    log_info "To completely remove KRO and ACK controllers:"
-    echo "   ./scripts/kro_uninstall.sh"
-    echo "   ./scripts/ack_controller_cleanup.sh iam <cluster-name> <region>"
-    echo "   ./scripts/ack_controller_cleanup.sh dynamodb <cluster-name> <region>"
-    echo "   ./scripts/ack_controller_cleanup.sh s3 <cluster-name> <region>"
+    log_info "To remove the capabilities themselves, delete module.ack and"
+    log_info "module.kro from opentofu/eks.tf and run 'tofu apply', or destroy"
+    log_info "the whole stack with ./scripts/destroy_infrastructure.sh."
+    echo ""
+    log_warn "Capabilities are created with delete_propagation_policy = RETAIN,"
+    log_warn "so AWS resources ACK created (DynamoDB tables, S3 buckets, IAM"
+    log_warn "roles) are NOT deleted with the capability. Remove them separately."
 }
 
 # Run main function

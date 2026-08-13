@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
-	"os"
 	"sort"
 	"sync"
 	"time"
@@ -72,6 +70,11 @@ func (l *Leaderboard) AddScore(ctx context.Context, entry LeaderboardEntry) (Lea
 		l.entries = l.entries[:maxCachedEntries]
 	}
 	l.mu.Unlock()
+
+	// Refresh the S3 snapshot so the backup reflects the score just accepted.
+	// Synchronous on purpose: an orphaned goroutine could outlive the process
+	// during a rolling update and lose the write silently.
+	l.backupToS3(ctx)
 
 	log.Printf("New score added: %s - %d points", entry.Name, entry.Score)
 	return entry, nil
@@ -184,51 +187,53 @@ func sortEntries(entries []LeaderboardEntry) {
 	})
 }
 
-// saveToPersistentStorage saves leaderboard to configured storage
-func (l *Leaderboard) saveToPersistentStorage() {
-	// Try DynamoDB first (primary storage)
-	if dynamodbClient != nil {
-		l.saveToDynamoDB()
-	}
-
-	// Only use S3 if explicitly enabled and configured
-	if os.Getenv("S3_ENABLED") == "true" && s3Client != nil {
-		l.saveToS3()
-	}
-
-	// JSON file as fallback
-	l.saveToJSON()
-}
-
-// saveToJSON saves leaderboard to a JSON file (fallback storage)
-func (l *Leaderboard) saveToJSON() {
-	_, err := json.MarshalIndent(l.entries, "", "  ")
-	if err != nil {
-		log.Printf("Error marshaling leaderboard: %v", err)
+// backupToS3 writes a snapshot of the leaderboard to S3.
+//
+// Best effort: a failed backup is logged but never fails the caller, because
+// the score is already durable in DynamoDB by that point. Returns immediately
+// when the backup is not configured.
+func (l *Leaderboard) backupToS3(ctx context.Context) {
+	if !s3BackupEnabled() {
 		return
 	}
 
-	// In a real implementation, you'd write to a file
-	// For now, we'll just log that we would save
-	log.Printf("Would save %d entries to JSON storage", len(l.entries))
-}
+	// Snapshot under the lock, then upload without holding it.
+	l.mu.RLock()
+	snapshot := make([]LeaderboardEntry, len(l.entries))
+	copy(snapshot, l.entries)
+	l.mu.RUnlock()
 
-// loadFromPersistentStorage loads leaderboard from configured storage
-func (l *Leaderboard) loadFromPersistentStorage() {
-	// Try to load from primary storage (DynamoDB, then S3, then JSON)
-	if dynamodbClient != nil {
-		l.loadFromDynamoDB()
-	} else if s3Client != nil {
-		l.loadFromS3()
-	} else {
-		l.loadFromJSON()
+	sortEntries(snapshot)
+
+	if err := l.saveToS3(ctx, snapshot); err != nil {
+		log.Printf("S3 backup failed (the score is still saved in DynamoDB): %v", err)
 	}
 }
 
-// loadFromJSON loads leaderboard from JSON file
-func (l *Leaderboard) loadFromJSON() {
-	// Implementation for loading from JSON file
-	log.Println("Loading leaderboard from JSON storage")
+// loadFromPersistentStorage loads the leaderboard, preferring DynamoDB and
+// falling back to the S3 snapshot.
+//
+// The fallback triggers on an actual read failure, not merely on DynamoDB
+// being unconfigured — that is what makes S3 useful during a DynamoDB outage
+// rather than only in a DynamoDB-less deployment.
+func (l *Leaderboard) loadFromPersistentStorage() {
+	if dynamodbClient != nil {
+		if err := l.loadFromDynamoDB(); err == nil {
+			return
+		} else {
+			log.Printf("DynamoDB read failed, trying the S3 fallback: %v", err)
+		}
+	}
+
+	if s3Client != nil {
+		if err := l.loadFromS3(); err == nil {
+			return
+		} else {
+			log.Printf("S3 fallback read failed: %v", err)
+		}
+	}
+
+	log.Println("No leaderboard source available; serving whatever is cached in memory")
 }
 
 // Count returns the number of entries currently held in memory.

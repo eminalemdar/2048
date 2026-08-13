@@ -26,7 +26,10 @@ spec:
           type: RuntimeDefault
       containers:
       - name: backend
-        image: 2048-backend:latest
+        # Registry image: these manifests target EKS Auto Mode's ALB, so the
+        # nodes must be able to pull. A local `2048-backend:latest` tag is not
+        # resolvable on EKS. Rebuild with scripts/build_and_push.sh and bump.
+        image: emnalmdr/2048-backend:v7
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

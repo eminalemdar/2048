@@ -9,18 +9,22 @@ A modern, responsive 2048 game built with React frontend and Go backend, featuri
 - **Touch/swipe support** for mobile devices
 - **Menu system** with game options and instructions
 - **Global leaderboard** with persistent score storage
-- **Multiple storage backends** (DynamoDB, S3, JSON fallback)
+- **DynamoDB primary storage** with an **S3 snapshot** as backup and read fallback
+- **Server-verified scores** — the backend reads the score, move count and
+  duration from its own record of the game, so they cannot be forged
 - **Score tracking** with game statistics (moves, duration)
 - **Responsive design** for all screen sizes
 
 ## 🏗️ Architecture
 
-- **Frontend**: React + Vite + Tailwind CSS
-- **Backend**: Go with RESTful API
-- **Database**: AWS DynamoDB (with S3 backup support)
-- **Containerized**: Docker & Docker Compose
-- **Kubernetes ready**: Production manifests included
-- **KRO support**: Kube Resource Orchestrator for simplified AWS resource management
+- **Frontend**: React 19 + Vite 8 (plain CSS — no UI framework)
+- **Backend**: Go 1.26 with a RESTful API
+- **Database**: AWS DynamoDB, with an S3 snapshot for backup and fallback
+- **Containerized**: Docker & Docker Compose, multi-arch images, non-root
+- **Kubernetes**: EKS with **Auto Mode** — AWS manages compute, networking,
+  cluster DNS, block storage and load balancing
+- **EKS Capabilities**: **kro** and **ACK** run as AWS-managed capabilities
+  outside the cluster — nothing to install, scale or patch
 
 ## 🚀 Running Locally
 
@@ -42,7 +46,10 @@ The game will be available at `http://localhost:3000` with:
 
 - Backend API on port 8000
 - DynamoDB Local on port 8001
-- Persistent leaderboard storage
+
+The `dynamodb-init` service creates both DynamoDB tables before the backend
+starts, so there is no manual setup step. DynamoDB Local runs in-memory, so
+data is discarded when the containers stop.
 
 ## 📋 Installation Guide
 
@@ -52,12 +59,24 @@ This guide provides step-by-step instructions for deploying the 2048 game applic
 
 The application uses the following components:
 
-- **EKS Cluster**: Managed Kubernetes cluster on AWS
-- **KRO**: Kube Resource Orchestrator for resource composition
-- **ACK Controllers**: AWS Controllers for Kubernetes (IAM, DynamoDB, S3)
-- **ALB**: Application Load Balancer for ingress
+- **EKS Cluster with Auto Mode**: AWS manages compute, networking, cluster DNS,
+  block storage and load balancing as core components — no node groups and no
+  `coredns` / `kube-proxy` / `vpc-cni` add-ons to install or upgrade
+- **EKS Capabilities**: kro and ACK run as AWS-managed capabilities *outside*
+  the cluster, so there are no controller pods to install, scale or patch
+  - **kro**: Kube Resource Orchestrator for resource composition
+  - **ACK**: AWS Controllers for Kubernetes (IAM, DynamoDB, S3)
+- **ALB**: provisioned by Auto Mode's built-in load balancing
 - **DynamoDB**: NoSQL database for game sessions and leaderboard
 - **IAM Roles**: Service Account (IRSA) for secure AWS access
+
+> ⚠️ **Security note on the defaults.** The ACK capability role is created with
+> `AdministratorAccess` and the kro capability is granted
+> `AmazonEKSClusterAdminPolicy`. These are the AWS getting-started defaults and
+> they keep every example here working, but together they mean **anyone who can
+> create a Kubernetes resource in this cluster can create arbitrary AWS
+> resources in the account**. Scope `ack_iam_role_policies` and
+> `kro_access_policy_arn` down before using this beyond a demo.
 
 ### Prerequisites
 
@@ -78,49 +97,43 @@ Deploy the underlying AWS infrastructure (EKS cluster, VPC, IAM roles) using Ope
 This script will:
 
 - Initialize OpenTofu configuration
-- Deploy EKS cluster with necessary networking
+- Deploy an **EKS Auto Mode** cluster with its networking
+- Enable the **ACK** and **kro** EKS Capabilities
 - Set up IAM roles and policies
 - Configure kubectl context
 
-### Step 2: Install ACK Controllers
+### Step 2: Wait for the capabilities to become active
 
-Install AWS Controllers for Kubernetes (ACK) to manage AWS resources from Kubernetes:
-
-```bash
-# Install required ACK controllers
-# Usage: ./scripts/ack_controller_install.sh <service> <cluster-name> <region>
-./scripts/ack_controller_install.sh iam game2048-dev eu-west-1
-./scripts/ack_controller_install.sh dynamodb game2048-dev eu-west-1
-./scripts/ack_controller_install.sh s3 game2048-dev eu-west-1
-```
-
-**Note**: The cluster name and region should match what was deployed in Step 1. You can get the actual values:
+ACK and kro are enabled by Step 1 — there is nothing to install into the
+cluster. They run on AWS-managed infrastructure and install their CRDs for you.
 
 ```bash
-# Get cluster name and region from OpenTofu output
 cd opentofu
-CLUSTER_NAME=$(tofu output -raw eks_cluster_id)
+CLUSTER_NAME=$(tofu output -raw eks_cluster_name)
 AWS_REGION=$(tofu output -raw aws_region)
-echo "Cluster: $CLUSTER_NAME, Region: $AWS_REGION"
+cd ..
 
-# Then use these values in the ACK installation
-./scripts/ack_controller_install.sh iam $CLUSTER_NAME $AWS_REGION
+# Both should report ACTIVE
+for cap in $(aws eks list-capabilities --cluster-name "$CLUSTER_NAME" \
+  --region "$AWS_REGION" --query 'capabilities[].name' --output text); do
+  echo -n "$cap: "
+  aws eks describe-capability --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+    --capability-name "$cap" --query 'capability.status' --output text
+done
 ```
 
-These controllers enable Kubernetes to manage AWS resources like DynamoDB tables and IAM roles declaratively.
-
-### Step 3: Install KRO
-
-Install the Kube Resource Orchestrator for simplified resource management:
+Verify the CRDs they installed are present:
 
 ```bash
-# Install KRO
-./scripts/kro_install.sh
+kubectl api-resources | grep kro.run             # ResourceGraphDefinition
+kubectl api-resources | grep services.k8s.aws    # ACK resource types
 ```
 
-KRO provides a higher-level abstraction for managing complex Kubernetes resource compositions.
+> **Previously** this step ran `./scripts/ack_controller_install.sh` and
+> `./scripts/kro_install.sh` to install in-cluster controllers via Helm. Those
+> scripts have been removed — the capabilities replace them entirely.
 
-### Step 4: Deploy KRO Application
+### Step 3: Deploy the KRO Application
 
 #### Option A: Automated Deployment (Recommended)
 
@@ -144,7 +157,7 @@ This script will:
 Deploy resources manually if you prefer step-by-step control:
 
 ```bash
-# Step 4a: Deploy ResourceGraphDefinitions
+# Step 3a: Deploy ResourceGraphDefinitions
 kubectl apply -f kubernetes/kro/iam-rgd.yaml
 kubectl apply -f kubernetes/kro/dynamodb-rgd.yaml
 kubectl apply -f kubernetes/kro/game-sessions-rgd.yaml
@@ -155,12 +168,26 @@ kubectl apply -f kubernetes/kro/game2048-app-rgd.yaml
 kubectl get rgd -n kro
 # All should show STATE: Active
 
-# Step 4b: Deploy Application Instances
+# Step 3b: Resolve the account-specific values.
+# Two instance files contain __AWS_ACCOUNT_ID__ and __OIDC_PROVIDER_ID__
+# placeholders. Neither value is committed: the account ID should not be
+# published, and the OIDC provider ID is generated per cluster, so a stored
+# value would be wrong for every other cluster.
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export OIDC_PROVIDER_ID=$(aws eks describe-cluster --name game2048-dev \
+  --region eu-west-1 --query 'cluster.identity.oidc.issuer' --output text | awk -F/ '{print $NF}')
+
+# Step 3c: Deploy Application Instances
 kubectl apply -f kubernetes/kro/instances/s3-instance.yaml
 kubectl apply -f kubernetes/kro/instances/game2048-leaderboard-table.yaml
 kubectl apply -f kubernetes/kro/instances/game2048-sessions-table.yaml
-kubectl apply -f kubernetes/kro/instances/game2048-backend-iam-role.yaml
-kubectl apply -f kubernetes/kro/instances/game2048-app-instance.yaml
+
+# These two need the placeholders substituted before they are applied
+sed -e "s/__AWS_ACCOUNT_ID__/$AWS_ACCOUNT_ID/g" \
+    -e "s/__OIDC_PROVIDER_ID__/$OIDC_PROVIDER_ID/g" \
+    kubernetes/kro/instances/game2048-backend-iam-role.yaml | kubectl apply -f -
+sed -e "s/__AWS_ACCOUNT_ID__/$AWS_ACCOUNT_ID/g" \
+    kubernetes/kro/instances/game2048-app-instance.yaml | kubectl apply -f -
 
 # Check deployment status
 kubectl get pods -n game-2048
@@ -169,16 +196,22 @@ kubectl get bucket -n kro
 kubectl get ingress -n game-2048
 ```
 
-### Step 5: Access the Application
+### Step 4: Access the Application
 
 Once deployed, access the application via the ALB ingress:
 
 ```bash
 # Get the ALB URL
 kubectl get ingress game2048-ingress -n game-2048 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-
-# The game will be available at: http://<ALB-URL>
 ```
+
+> ⚠️ **Type `http://` explicitly.** The ingress only creates an **HTTP (port 80)**
+> listener. Modern browsers try HTTPS first for a bare hostname, so pasting the
+> ALB name alone gives "can't reach this site" even though the app is healthy.
+>
+> To serve HTTPS, request an ACM certificate and add `certificateARNs` to the
+> `IngressClassParams` in `kubernetes/auto-mode-ingressclass.yaml`, plus a
+> `443` entry in the ingress `listen-ports` annotation.
 
 ### 🎉 Installation Complete
 
@@ -230,7 +263,7 @@ tofu apply
 
 ```bash
 # Use the output command from tofu apply
-aws eks --region eu-west-1 update-kubeconfig --name game2048-dev-cluster
+aws eks --region eu-west-1 update-kubeconfig --name game2048-dev
 ```
 
 ## ☸️ Kubernetes Application Deployment (Traditional)
@@ -244,15 +277,19 @@ cd kubernetes
 ./deploy.sh
 ```
 
+> **Note**: these manifests now target EKS Auto Mode's ALB, so they require a
+> cluster (the old `nginx` IngressClass and `2048.local` host entry are gone).
+> Apply `kubernetes/auto-mode-ingressclass.yaml` first.
+
 ### Access
 
 ```bash
-# Port forward
+# Port forward (no ALB needed)
 kubectl port-forward -n game-2048 svc/frontend-service 3000:80
 
-# Or add to /etc/hosts and use ingress
-echo "<INGRESS_IP> 2048.local" >> /etc/hosts
-# Then visit http://2048.local
+# Or via the ALB — remember the http:// prefix
+kubectl get ingress game-2048-ingress -n game-2048 \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
 ## 🎛️ KRO (Kube Resource Orchestrator) Deployment
@@ -270,13 +307,14 @@ KRO enables you to create **custom Kubernetes APIs** for managing complex resour
 
 ### KRO Prerequisites
 
-```bash
-# Install KRO
-./scripts/kro_install.sh
+None to install. kro and ACK are enabled as **EKS Capabilities** by
+`./scripts/deploy_infrastructure.sh` (see `module.kro` and `module.ack` in
+`opentofu/eks.tf`) and run on AWS-managed infrastructure. Confirm they are
+active:
 
-# Install ACK controllers for AWS resources
-./scripts/ack_controller_install.sh dynamodb
-./scripts/ack_controller_install.sh s3
+```bash
+kubectl api-resources | grep kro.run
+kubectl api-resources | grep services.k8s.aws
 ```
 
 ### Deploy with KRO
@@ -308,28 +346,28 @@ The following scripts are available to automate deployment tasks:
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
-| `scripts/deploy_infrastructure.sh` | Deploy AWS infrastructure with OpenTofu | `./scripts/deploy_infrastructure.sh` |
-| `scripts/ack_controller_install.sh` | Install ACK controllers | `./scripts/ack_controller_install.sh <service> <cluster-name> <region>` |
-| `scripts/kro_install.sh` | Install KRO | `./scripts/kro_install.sh` |
-| `scripts/build_and_push.sh` | Build and push Docker images | `./scripts/build_and_push.sh <component> <tag>` |
+| `scripts/deploy_infrastructure.sh` | Deploy AWS infrastructure (cluster + capabilities) with OpenTofu | `./scripts/deploy_infrastructure.sh` |
+| `scripts/deploy_kro_application.sh` | Deploy the RGDs and application instances | `./scripts/deploy_kro_application.sh [cluster-name] [region]` |
+| `scripts/cleanup_kro_application.sh` | Remove the application from the cluster | `./scripts/cleanup_kro_application.sh` |
+| `scripts/build_and_push.sh` | Build and push multi-arch Docker images | `./scripts/build_and_push.sh [tag]` |
+| `scripts/destroy_infrastructure.sh` | Tear down the AWS infrastructure | `./scripts/destroy_infrastructure.sh` |
+
+> The `ack_controller_install.sh`, `ack_controller_cleanup.sh`,
+> `kro_install.sh` and `kro_uninstall.sh` scripts have been **removed**. ACK and
+> kro are now EKS Capabilities managed in `opentofu/eks.tf`, so there is nothing
+> to install into the cluster.
 
 ### Script Examples
 
 ```bash
-# Deploy infrastructure
+# Deploy infrastructure (cluster with Auto Mode + ACK/kro capabilities)
 ./scripts/deploy_infrastructure.sh
 
-# Install ACK controllers (all three required)
-./scripts/ack_controller_install.sh iam game2048-dev eu-west-1
-./scripts/ack_controller_install.sh dynamodb game2048-dev eu-west-1
-./scripts/ack_controller_install.sh s3 game2048-dev eu-west-1
+# Deploy the application
+./scripts/deploy_kro_application.sh game2048-dev eu-west-1
 
-# Install KRO
-./scripts/kro_install.sh
-
-# Build and push images
-./scripts/build_and_push.sh backend v1
-./scripts/build_and_push.sh frontend v1
+# Build and push images (tag defaults to the git short SHA)
+./scripts/build_and_push.sh v7
 ```
 
 ## 🧹 Cleanup
@@ -375,17 +413,15 @@ cd opentofu
 tofu destroy
 ```
 
-### Uninstall Controllers (Optional)
+### Remove the Capabilities (Optional)
 
-```bash
-# Remove ACK controllers
-helm uninstall ack-iam-controller -n ack-system
-helm uninstall ack-dynamodb-controller -n ack-system
-helm uninstall ack-s3-controller -n ack-system
+kro and ACK are EKS Capabilities, not Helm releases — there is nothing to
+`helm uninstall`. They are removed by deleting `module.ack` / `module.kro` from
+`opentofu/eks.tf` and re-applying, or by `tofu destroy` above.
 
-# Remove KRO
-kubectl delete -f https://github.com/awslabs/kro/releases/latest/download/kro.yaml
-```
+> ⚠️ Capabilities are created with `delete_propagation_policy = RETAIN`, so AWS
+> resources ACK created (DynamoDB tables, the S3 bucket, IAM roles) are **not**
+> deleted with the capability. Remove those separately if you want them gone.
 
 ## 🔧 Troubleshooting
 
@@ -410,19 +446,35 @@ kubectl get serviceaccount game2048-backend -n game-2048 -o yaml
 **Ingress not accessible:**
 
 ```bash
-# Check ALB controller is running
-kubectl get pods -n kube-system | grep aws-load-balancer-controller
+# The IngressClass must exist and point at Auto Mode's controller.
+# There is no aws-load-balancer-controller pod to look for — Auto Mode
+# provides load balancing itself.
+kubectl get ingressclass alb -o jsonpath='{.spec.controller}'
+# expected: eks.amazonaws.com/alb
 
-# Verify ingress status
 kubectl describe ingress game2048-ingress -n game-2048
 ```
+
+If the browser says the site is unreachable but `curl http://<ALB>/health`
+returns 200, you are hitting the HTTPS-upgrade issue — see Step 4.
 
 **RGD not active:**
 
 ```bash
-# Check RGD status
-kubectl get rgd -n kro
-kubectl describe rgd <rgd-name> -n kro
+# ResourceGraphDefinitions are cluster-scoped (no -n flag)
+kubectl get rgd
+kubectl describe rgd <rgd-name>
+
+# A common failure is a status field declared as a bare type:
+#   "status fields without expressions are not supported"
+# Status fields must be CEL expressions, e.g. ${iamRole.status.ackResourceMetadata.arn}
+```
+
+**Instances fail with `namespaces "kro" not found`:**
+
+```bash
+# The kro capability runs outside the cluster and creates no namespace.
+kubectl apply -f kubernetes/kro/namespace.yaml
 ```
 
 ### Useful Commands
@@ -457,28 +509,48 @@ kubectl get table -n kro
 - **Game statistics** (moves, duration, score)
 - **Persistent storage** across sessions
 
-### Storage Options
+### Storage
 
-- **DynamoDB**: Primary database for leaderboard (AWS managed NoSQL)
-- **S3 Backup**: Optional cloud backup (configure AWS credentials)
-- **JSON Fallback**: Local file storage if databases unavailable
+- **DynamoDB** — primary store. The leaderboard is read with a `Query` against
+  the `ScoreIndex` GSI (constant partition key + `score` sort key), not a table
+  scan, and results are paginated.
+- **S3 snapshot** — `leaderboard/scores.json` is rewritten after every accepted
+  score. If a DynamoDB read *fails*, the backend serves this snapshot instead of
+  an empty leaderboard. Enabled with `S3_ENABLED=true` and `S3_BUCKET`.
 
 ## 🛠️ Development
 
-### Backend (Go)
+`docker-compose up --build` is the easiest path — it starts DynamoDB Local and
+creates the tables. To run the pieces directly:
+
+### Backend (Go 1.26)
 
 ```bash
 cd backend
+go test -race ./...
+
+# Needs DynamoDB. Point it at DynamoDB Local (docker compose up dynamodb-local
+# dynamodb-init) or at real AWS. Without AWS_REGION the API returns 500s —
+# by design, rather than panicking.
+AWS_REGION=us-east-1 \
+DYNAMODB_ENDPOINT=http://localhost:8001 \
+DYNAMODB_TABLE=game2048-leaderboard \
+GAME_SESSIONS_TABLE=game2048-sessions-dev \
+AWS_ACCESS_KEY_ID=dummy AWS_SECRET_ACCESS_KEY=dummy \
 go run .
 ```
 
-### Frontend (React)
+### Frontend (Node 24)
 
 ```bash
 cd frontend
-npm install
-npm run dev
+npm ci
+npm run dev     # proxies /game, /leaderboard and /health to localhost:8000
 ```
+
+The bundle calls the API with relative paths by default, which is what the
+single-origin ALB deployment needs. Set `VITE_API_URL` at **build** time to
+point at a backend on another origin (docker-compose does this).
 
 ---
 

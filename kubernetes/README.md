@@ -1,22 +1,30 @@
 # Kubernetes Deployment
 
-This directory contains traditional Kubernetes manifests for deploying the 2048 game application.
+This directory contains plain Kubernetes manifests for deploying the 2048 game.
 
-> **⚠️ Note**: For production deployments, we recommend using the **KRO-based approach** in the `kro/` directory, which provides better resource management and AWS integration.
+> **⚠️ Note**: the **KRO-based approach** in the `kro/` directory is the
+> recommended path. It provisions the AWS resources (DynamoDB tables, S3 bucket,
+> IAM role) as part of the deployment. The manifests here assume those resources
+> already exist and only deploy the workloads.
 
 ## 🏗️ Prerequisites
 
-1. **EKS Cluster** deployed via OpenTofu (see `../opentofu/README.md`)
-2. **kubectl configured** to connect to your cluster
-3. **ACK Controllers** installed for AWS resource management
-4. **DynamoDB tables** created (manually or via ACK/KRO)
+1. **EKS cluster with Auto Mode** deployed via OpenTofu (see `../opentofu/README.md`)
+2. **kubectl configured** to connect to that cluster
+3. **DynamoDB tables** created — via the KRO path, or manually (below)
+4. **S3 bucket** for the leaderboard backup (optional, but the backend expects
+   it when `S3_ENABLED=true`)
+5. **IAM role for the backend ServiceAccount** (IRSA), with the policy below
 
-## 🚀 Traditional Deployment
+> These manifests target **EKS Auto Mode's** built-in load balancing. They no
+> longer work on a local kind/minikube cluster — the `nginx` IngressClass and
+> the `2048.local` host entry are gone, replaced by an ALB.
+
+## 🚀 Deployment
 
 ### Quick Deploy
 
 ```bash
-# Deploy using traditional manifests
 ./deploy.sh
 ```
 
@@ -25,6 +33,9 @@ This directory contains traditional Kubernetes manifests for deploying the 2048 
 ```bash
 # Create namespace
 kubectl apply -f namespace.yaml
+
+# IngressClass for Auto Mode's ALB — must exist before the Ingress
+kubectl apply -f auto-mode-ingressclass.yaml
 
 # Deploy application components
 kubectl apply -f backend-deployment.yaml
@@ -39,22 +50,38 @@ kubectl apply -f ingress.yaml
 kubectl apply -f hpa.yaml
 ```
 
+### Container images
+
+The deployments reference published images (`emnalmdr/2048-backend:v7`,
+`emnalmdr/2048-frontend:v7`). `deploy.sh` does **not** build locally: EKS nodes
+cannot pull a local `2048-backend:latest` tag. To ship your own build:
+
+```bash
+../scripts/build_and_push.sh v8      # builds + pushes multi-arch images
+# then update the image tags in backend-deployment.yaml / frontend-deployment.yaml
+```
+
 ## 📁 Manifest Files
 
 | File | Purpose |
 |------|---------|
 | `namespace.yaml` | Creates `game-2048` namespace |
-| `backend-deployment.yaml` | Go backend deployment (2 replicas) |
-| `backend-service.yaml` | Backend service (ClusterIP) |
-| `frontend-deployment.yaml` | React frontend deployment (2 replicas) |
-| `frontend-service.yaml` | Frontend service (ClusterIP) |
+| `auto-mode-ingressclass.yaml` | `alb` IngressClass + IngressClassParams for Auto Mode |
+| `backend-deployment.yaml` | Go backend deployment (2 replicas, non-root, read-only rootfs) |
+| `backend-service.yaml` | Backend service (ClusterIP, port 8000) |
+| `frontend-deployment.yaml` | Frontend deployment (2 replicas, non-root, serves on **8080**) |
+| `frontend-service.yaml` | Frontend service (ClusterIP, port 80 → targetPort 8080) |
 | `ingress.yaml` | ALB ingress for external access |
-| `hpa.yaml` | Horizontal Pod Autoscaler |
-| `configmap.yaml` | Application configuration |
+| `hpa.yaml` | Horizontal Pod Autoscalers (backend + frontend) |
+| `configmap.yaml` | Application configuration (currently unused by the deployments) |
+
+### A note on ports
+
+The frontend runs the **unprivileged** nginx image as uid 101, which cannot bind
+a port below 1024. The container listens on **8080**; the Service still exposes
+**80**, so nothing upstream changes.
 
 ## 🗄️ Database Requirements
-
-The application requires DynamoDB tables for:
 
 - **Leaderboard**: `game2048-leaderboard-dev`
 - **Game Sessions**: `game2048-sessions-dev`
@@ -62,32 +89,56 @@ The application requires DynamoDB tables for:
 ### Create Tables Manually
 
 ```bash
-# Leaderboard table
+# Leaderboard table.
+#
+# The ScoreIndex GSI uses a CONSTANT partition key (`leaderboard`) with `score`
+# as the sort key. This is deliberate: a DynamoDB Query requires an equality
+# condition on the partition key, so an index keyed on `score` itself cannot
+# answer "top N by score" and would force a full table scan.
 aws dynamodb create-table \
   --table-name game2048-leaderboard-dev \
   --attribute-definitions \
     AttributeName=id,AttributeType=S \
+    AttributeName=leaderboard,AttributeType=S \
     AttributeName=score,AttributeType=N \
-    AttributeName=timestamp,AttributeType=S \
   --key-schema \
     AttributeName=id,KeyType=HASH \
   --global-secondary-indexes \
-    IndexName=ScoreIndex,KeySchema=[{AttributeName=score,KeyType=HASH},{AttributeName=timestamp,KeyType=RANGE}],Projection={ProjectionType=ALL} \
+    'IndexName=ScoreIndex,KeySchema=[{AttributeName=leaderboard,KeyType=HASH},{AttributeName=score,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
   --billing-mode PAY_PER_REQUEST
 
 # Game sessions table
 aws dynamodb create-table \
   --table-name game2048-sessions-dev \
-  --attribute-definitions \
-    AttributeName=id,AttributeType=S \
-  --key-schema \
-    AttributeName=id,KeyType=HASH \
+  --attribute-definitions AttributeName=id,AttributeType=S \
+  --key-schema AttributeName=id,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST
+
+# Sessions expire via TTL
+aws dynamodb update-time-to-live \
+  --table-name game2048-sessions-dev \
+  --time-to-live-specification "Enabled=true,AttributeName=ttl"
 ```
+
+> ⚠️ A GSI's key schema **cannot be changed after creation** — DynamoDB rejects
+> the update. A table created with an older `ScoreIndex` must have the index (or
+> the table) deleted and recreated.
+
+### S3 backup bucket (optional)
+
+```bash
+aws s3api create-bucket --bucket <your-unique-bucket-name> \
+  --region eu-west-1 --create-bucket-configuration LocationConstraint=eu-west-1
+```
+
+Then set `S3_ENABLED=true` and `S3_BUCKET=<your-unique-bucket-name>` on the
+backend deployment.
 
 ## 🔐 IAM Requirements
 
-The backend pods need IAM permissions for DynamoDB access. Create an IAM role with:
+The backend pods reach AWS through **IRSA**. Create a role whose trust policy
+allows the `game2048-backend` ServiceAccount in the `game-2048` namespace, and
+annotate the ServiceAccount with `eks.amazonaws.com/role-arn`.
 
 ```json
 {
@@ -100,7 +151,6 @@ The backend pods need IAM permissions for DynamoDB access. Create an IAM role wi
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
-        "dynamodb:Scan",
         "dynamodb:Query"
       ],
       "Resource": [
@@ -109,26 +159,37 @@ The backend pods need IAM permissions for DynamoDB access. Create an IAM role wi
         "arn:aws:dynamodb:*:*:table/game2048-leaderboard-dev/index/*",
         "arn:aws:dynamodb:*:*:table/game2048-sessions-dev/index/*"
       ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::<your-backup-bucket>/leaderboard/*"
     }
   ]
 }
 ```
+
+> `dynamodb:Scan` is no longer required — the leaderboard is read with a `Query`
+> against `ScoreIndex`. The S3 statement is only needed when the backup is
+> enabled; it is scoped to the `leaderboard/*` prefix rather than the bucket.
 
 ## 🌐 Access the Application
 
 ### Via ALB Ingress
 
 ```bash
-# Get ALB URL
-kubectl get ingress game2048-ingress -n game-2048 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-
-# Access at: http://<ALB-URL>
+kubectl get ingress game-2048-ingress -n game-2048 \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
+
+> ⚠️ **Use an explicit `http://` prefix.** Only an HTTP (port 80) listener is
+> created. Browsers try HTTPS first for a bare hostname and will report the site
+> as unreachable even while the app is healthy.
 
 ### Via Port Forward
 
 ```bash
-# Frontend
+# Frontend (Service port 80 -> container 8080)
 kubectl port-forward -n game-2048 svc/frontend-service 3000:80
 
 # Backend API
@@ -138,33 +199,35 @@ kubectl port-forward -n game-2048 svc/backend-service 8000:8000
 ## 🔍 Monitoring
 
 ```bash
-# Check pod status
 kubectl get pods -n game-2048
 
-# View logs
 kubectl logs -f deployment/backend-deployment -n game-2048
 kubectl logs -f deployment/frontend-deployment -n game-2048
 
-# Check ingress
-kubectl describe ingress game2048-ingress -n game-2048
+kubectl describe ingress game-2048-ingress -n game-2048
+
+# Confirm the IngressClass points at Auto Mode
+kubectl get ingressclass alb -o jsonpath='{.spec.controller}'   # eks.amazonaws.com/alb
 ```
 
 ## 🧹 Cleanup
 
 ```bash
-# Delete all resources
+# Delete the workloads
 kubectl delete namespace game-2048
-
-# Or delete individual components
-kubectl delete -f .
 ```
+
+> `kubectl delete -f .` would also remove `auto-mode-ingressclass.yaml`, which
+> is a **cluster-scoped** resource shared with the KRO deployment. Delete the
+> namespace instead unless you intend to remove the IngressClass too.
+
+The DynamoDB tables, S3 bucket and IAM role live outside this namespace and are
+not removed by the above.
 
 ## 🎯 Recommended Approach
 
-For production deployments, consider using:
+1. **KRO-based deployment** (`kro/README.md`) — provisions AWS resources with
+   the application, and is the path the deployment scripts support
+2. **GitOps** — the cluster also has a managed Argo CD capability available
 
-1. **KRO-based deployment** (`../kro/README.md`) - Provides better AWS resource management
-2. **Helm charts** - For templating and configuration management
-3. **GitOps** - For automated deployments and configuration drift detection
-
-See the main [README.md](../README.md) for the complete installation guide using modern tooling.
+See the main [README.md](../README.md) for the complete installation guide.

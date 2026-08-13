@@ -8,3 +8,10 @@ spec:
   serviceAccountName: "game2048-backend"
   serviceAccountNamespace: "game-2048"
   region: "eu-west-1"
+  # Both placeholders are filled in by scripts/deploy_kro_application.sh, which
+  # reads them from the AWS account and cluster you are deploying to.
+  # The OIDC provider ID is generated per cluster, so it cannot be committed.
+  accountId: "__AWS_ACCOUNT_ID__"
+  oidcProviderId: "__OIDC_PROVIDER_ID__"
+  leaderboardTableName: "game2048-leaderboard-dev"
+  sessionsTableName: "game2048-sessions-dev"

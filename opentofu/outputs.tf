@@ -25,9 +25,13 @@ output "nat_gateway_ids" {
 }
 
 # EKS Outputs
-output "eks_cluster_id" {
-  description = "EKS cluster ID"
-  value       = module.eks.cluster_id
+# NOTE: this used to expose module.eks.cluster_id. As of EKS module v21 that
+# output is populated only for local clusters on Outposts and is otherwise an
+# empty string, which silently broke `aws eks update-kubeconfig --name`.
+# The cluster name is what callers actually want.
+output "eks_cluster_name" {
+  description = "EKS cluster name"
+  value       = module.eks.cluster_name
 }
 
 output "eks_cluster_arn" {
@@ -45,15 +49,37 @@ output "eks_cluster_version" {
   value       = module.eks.cluster_version
 }
 
+# The EKS-managed cluster security group is the meaningful one under Auto Mode:
+# nodes are managed by AWS, so there is no self-managed node security group.
 output "eks_cluster_security_group_id" {
-  description = "Security group ID attached to the EKS cluster"
-  value       = module.eks.cluster_security_group_id
+  description = "EKS-managed cluster security group (control plane to data plane)"
+  value       = module.eks.cluster_primary_security_group_id
 }
 
-output "eks_node_groups" {
-  description = "EKS node groups"
-  value       = module.eks.eks_managed_node_groups
+output "eks_node_iam_role_arn" {
+  description = "IAM role used by EKS Auto Mode nodes"
+  value       = module.eks.node_iam_role_arn
 }
+
+output "eks_capabilities" {
+  description = "ARN, version and IAM role of each EKS capability on the cluster"
+  value = {
+    ack = {
+      arn          = module.ack.arn
+      version      = module.ack.version
+      iam_role_arn = module.ack.iam_role_arn
+    }
+    kro = {
+      arn          = module.kro.arn
+      version      = module.kro.version
+      iam_role_arn = module.kro.iam_role_arn
+    }
+  }
+}
+
+# NOTE: there is no node-groups output. EKS Auto Mode provisions nodes itself,
+# so this cluster has no managed node groups to report. See
+# eks_node_iam_role_arn above for the role Auto Mode nodes run as.
 
 output "eks_oidc_issuer_url" {
   description = "The URL on the EKS cluster for the OpenID Connect identity provider"

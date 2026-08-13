@@ -2,9 +2,32 @@
 
 # KRO Application Deployment Script
 # This script deploys the 2048 game application using KRO in the correct order
-# Usage: ./deploy_kro_application.sh
+#
+# Usage: ./deploy_kro_application.sh [cluster-name] [region]
+#
+# The AWS account ID and the cluster's IAM OIDC provider ID are discovered at
+# deploy time and substituted into the instance manifests. Neither is committed
+# to the repository: the account ID should not be published, and the OIDC
+# provider ID is generated per cluster, so a committed value would be wrong for
+# every cluster except the one it came from.
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
+
+EKS_CLUSTER_NAME="${1:-${EKS_CLUSTER_NAME:-game2048-dev}}"
+AWS_REGION="${2:-${AWS_REGION:-eu-west-1}}"
+
+# Populated by resolve_aws_identity()
+AWS_ACCOUNT_ID=""
+OIDC_PROVIDER_ID=""
+
+# Directory holding the rendered instance manifests; cleaned up on exit.
+RENDER_DIR=""
+cleanup_render_dir() {
+    if [ -n "$RENDER_DIR" ] && [ -d "$RENDER_DIR" ]; then
+        rm -rf "$RENDER_DIR"
+    fi
+}
+trap cleanup_render_dir EXIT
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,7 +60,9 @@ check_prerequisites() {
     
     command -v kubectl >/dev/null 2>&1 || missing_tools+=("kubectl")
     command -v curl >/dev/null 2>&1 || missing_tools+=("curl")
-    
+    # Needed to resolve the AWS account ID and the cluster's OIDC provider.
+    command -v aws >/dev/null 2>&1 || missing_tools+=("aws")
+
     if [ ${#missing_tools[@]} -ne 0 ]; then
         log_error "Missing required tools: ${missing_tools[*]}"
         exit 1
@@ -49,21 +74,28 @@ check_prerequisites() {
         exit 1
     fi
     
-    # Check if KRO is installed
+    # kro and ACK are EKS Capabilities: they run on AWS-managed infrastructure
+    # rather than as pods in this cluster, so the check is for the CRDs the
+    # capabilities install, not for controller deployments.
+
     if ! kubectl get crd resourcegraphdefinitions.kro.run >/dev/null 2>&1; then
-        log_error "KRO is not installed. Please run './scripts/kro_install.sh' first."
+        log_error "The kro capability is not active on this cluster."
+        log_error "Enable it with 'tofu apply' in opentofu/ (see module.kro in eks.tf),"
+        log_error "then wait for the capability to report ACTIVE."
         exit 1
     fi
-    
-    # Check if ACK controllers are installed
-    local required_controllers=("iam" "dynamodb" "s3")
-    for controller in "${required_controllers[@]}"; do
-        if ! kubectl get pods -n ack-system -l "app.kubernetes.io/name=ack-${controller}-controller" >/dev/null 2>&1; then
-            log_error "ACK ${controller} controller is not installed. Please run './scripts/ack_controller_install.sh ${controller} <cluster-name> <region>' first."
+
+    # One CRD per ACK service group the RGDs rely on.
+    local required_ack_groups=("iam" "dynamodb" "s3")
+    for group in "${required_ack_groups[@]}"; do
+        if ! kubectl api-resources --api-group="${group}.services.k8s.aws" 2>/dev/null | tail -n +2 | grep -q .; then
+            log_error "No ACK CRDs found for '${group}.services.k8s.aws'."
+            log_error "Enable the ACK capability with 'tofu apply' in opentofu/ (module.ack in eks.tf)"
+            log_error "and wait for it to report ACTIVE before deploying."
             exit 1
         fi
     done
-    
+
     log_info "Prerequisites check passed"
 }
 
@@ -139,6 +171,16 @@ wait_for_resource() {
 # Deploy RGDs
 deploy_rgds() {
     log_step "Step 1: Deploying ResourceGraphDefinitions"
+
+    # EKS Auto Mode provides load balancing, but the IngressClass that points at
+    # it has to exist before any Ingress referencing "alb" can be reconciled.
+    log_info "Applying Auto Mode IngressClass"
+    kubectl apply -f kubernetes/auto-mode-ingressclass.yaml
+
+    # The kro capability runs outside the cluster and creates no namespace, so
+    # the namespace holding the instances has to be created explicitly.
+    log_info "Ensuring the kro namespace exists"
+    kubectl apply -f kubernetes/kro/namespace.yaml
     
     local rgds=(
         "kubernetes/kro/iam-rgd.yaml:iam-role-for-service-account"
@@ -168,9 +210,71 @@ deploy_rgds() {
 }
 
 # Deploy instances
+# Discover the AWS account and the cluster's OIDC provider so the IAM trust
+# policy is built for the cluster actually being deployed to.
+resolve_aws_identity() {
+    log_step "Resolving AWS account and cluster OIDC provider"
+
+    if ! AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text 2>/dev/null); then
+        log_error "Could not determine the AWS account ID. Check your AWS credentials."
+        exit 1
+    fi
+
+    local issuer
+    if ! issuer=$(aws eks describe-cluster \
+        --name "$EKS_CLUSTER_NAME" \
+        --region "$AWS_REGION" \
+        --query 'cluster.identity.oidc.issuer' \
+        --output text 2>/dev/null); then
+        log_error "Could not read the OIDC issuer for cluster '${EKS_CLUSTER_NAME}' in ${AWS_REGION}."
+        log_error "Pass the right name: ./deploy_kro_application.sh <cluster-name> <region>"
+        exit 1
+    fi
+
+    # The provider ID is the last path segment of the issuer URL, e.g.
+    # https://oidc.eks.eu-west-1.amazonaws.com/id/ABCD1234 -> ABCD1234
+    OIDC_PROVIDER_ID="${issuer##*/}"
+
+    if [ -z "$OIDC_PROVIDER_ID" ] || [ "$OIDC_PROVIDER_ID" = "None" ]; then
+        log_error "Cluster '${EKS_CLUSTER_NAME}' has no OIDC issuer. IRSA requires one."
+        exit 1
+    fi
+
+    # Only the last four digits are shown; the full account ID stays out of logs.
+    log_info "AWS account:   ****${AWS_ACCOUNT_ID: -4}"
+    log_info "Cluster:       ${EKS_CLUSTER_NAME} (${AWS_REGION})"
+    log_info "OIDC provider: ${OIDC_PROVIDER_ID}"
+}
+
+# render_instance writes a copy of an instance manifest with the deployment
+# placeholders substituted, and echoes the path to the rendered file.
+render_instance() {
+    local source_file="$1"
+
+    if [ -z "$RENDER_DIR" ]; then
+        RENDER_DIR="$(mktemp -d)"
+    fi
+
+    local rendered
+    rendered="${RENDER_DIR}/$(basename "$source_file")"
+
+    sed \
+        -e "s/__AWS_ACCOUNT_ID__/${AWS_ACCOUNT_ID}/g" \
+        -e "s/__OIDC_PROVIDER_ID__/${OIDC_PROVIDER_ID}/g" \
+        "$source_file" > "$rendered"
+
+    # Fail loudly rather than applying a manifest with an unresolved value.
+    if grep -q "__AWS_ACCOUNT_ID__\|__OIDC_PROVIDER_ID__" "$rendered"; then
+        log_error "Unresolved placeholder remains in ${source_file}"
+        exit 1
+    fi
+
+    echo "$rendered"
+}
+
 deploy_instances() {
     log_step "Step 2: Deploying Application Instances"
-    
+
     # Deploy in dependency order
     local instances=(
         "kubernetes/kro/instances/s3-instance.yaml:s3backupbucket:game2048-backup-dev:kro"
@@ -189,7 +293,7 @@ deploy_instances() {
         fi
         
         log_info "Applying instance: $file"
-        kubectl apply -f "$file"
+        kubectl apply -f "$(render_instance "$file")"
         
         # Wait for this instance to be ready
         wait_for_resource "$resource_type" "$resource_name" "$namespace"
@@ -343,6 +447,7 @@ main() {
     log_info "======================================================"
     
     check_prerequisites
+    resolve_aws_identity
     deploy_rgds
     deploy_instances
     verify_deployment

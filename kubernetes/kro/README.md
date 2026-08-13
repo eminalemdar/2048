@@ -106,37 +106,40 @@ kubernetes/kro/
 ├── game-sessions-rgd.yaml             # Game sessions table RGD
 ├── iam-rgd.yaml                       # IAM role for service accounts RGD
 ├── game2048-app-rgd.yaml             # Application ResourceGraphDefinition
-├── s3-rgd.yaml                        # S3 ResourceGraphDefinition (optional)
+├── s3-rgd.yaml                        # S3 ResourceGraphDefinition (leaderboard backup)
 └── instances/
     ├── game2048-leaderboard-table.yaml    # Leaderboard DynamoDB table
     ├── game2048-sessions-table.yaml       # Game sessions DynamoDB table
     ├── game2048-backend-iam-role.yaml     # IAM role for backend
     ├── game2048-app-instance.yaml         # Complete application
-    └── s3-instance.yaml                   # S3 backup bucket (optional)
+    └── s3-instance.yaml                   # S3 backup bucket (leaderboard backup)
 ```
 
 ## 🚀 Prerequisites
 
 Before deploying KRO resources, ensure you have:
 
-1. **EKS Cluster** deployed with OpenTofu
-2. **KRO installed** on the cluster
-3. **ACK Controllers** for DynamoDB and S3
-4. **NGINX Ingress Controller** installed
+1. **EKS Cluster with Auto Mode** deployed with OpenTofu
+2. **kro and ACK capabilities** active on that cluster — enabled by the same
+   `tofu apply`, nothing to install into the cluster
+3. **Auto Mode IngressClass** applied (`kubernetes/auto-mode-ingressclass.yaml`)
+
+> Auto Mode provides load balancing natively, so there is no NGINX Ingress
+> Controller and no AWS Load Balancer Controller to install. The `alb`
+> IngressClass points at Auto Mode's `eks.amazonaws.com/alb` controller.
 
 ### Quick Setup
 
 ```bash
-# 1. Deploy infrastructure
+# 1. Deploy infrastructure — this also enables the kro and ACK capabilities
 ../../scripts/deploy_infrastructure.sh
 
-# 2. Install KRO
-../../scripts/kro_install.sh
+# 2. Confirm both capabilities installed their CRDs
+kubectl api-resources | grep kro.run
+kubectl api-resources | grep services.k8s.aws
 
-# 3. Install ACK controllers
-../../scripts/ack_controller_install.sh iam game2048-dev eu-west-1
-../../scripts/ack_controller_install.sh dynamodb game2048-dev eu-west-1
-../../scripts/ack_controller_install.sh s3 game2048-dev eu-west-1
+# 3. Deploy the RGDs and instances (also applies the IngressClass)
+../../scripts/deploy_kro_application.sh game2048-dev eu-west-1
 ```
 
 ## 🎯 ResourceGraphDefinitions
@@ -145,22 +148,32 @@ Before deploying KRO resources, ensure you have:
 
 Creates **IAM roles for service accounts** with:
 
-- **IRSA trust policy** for EKS service accounts
-- **DynamoDB permissions** for table access
-- **Inline policies** for security
+- **IRSA trust policy** for EKS service accounts, built from the cluster's own
+  OIDC provider ID (supplied at deploy time — it is generated per cluster)
+- **DynamoDB permissions** scoped to the two tables and their indexes
+- **S3 permissions** scoped to the `leaderboard/*` prefix of the backup bucket
 - **Proper resource ARNs** for least privilege
 
 **Generated Resources:**
 
-- IAM Role (via ACK IAM controller)
-- Inline policies for DynamoDB access
+- IAM Role (via ACK IAM controller), with `DynamoDBAccess` and `S3BackupAccess`
+  inline policies
+
+> The ACK `Role` resource is created in the **`kro`** namespace
+> (`resourceNamespace`), not in the application namespace. The two are separate
+> on purpose: an IAM role is a global AWS resource, and tying its custom
+> resource to the application namespace created a circular dependency — the role
+> could not be created until the namespace existed, but the application needed
+> the role.
 
 ### 2. DynamoDB Table RGD (`dynamodb-rgd.yaml`)
 
 Creates **DynamoDB tables** with:
 
 - **Primary key**: `id` (String)
-- **Global Secondary Index**: `ScoreIndex` for leaderboard queries
+- **Global Secondary Index**: `ScoreIndex` — constant partition key
+  (`leaderboard`) + `score` sort key, so the backend can `Query` for the top N
+  instead of scanning the table
 - **Pay-per-request billing** for cost optimization
 - **Proper tagging** for resource management
 
@@ -198,7 +211,7 @@ Creates the **complete application stack** with:
 - ALB Ingress with proper routing
 - Service Account with IRSA annotation
 
-### 5. S3 Backup RGD (`s3-rgd.yaml`) - Optional
+### 5. S3 Backup RGD (`s3-rgd.yaml`)
 
 Creates **S3 backup storage** with:
 
@@ -210,6 +223,22 @@ Creates **S3 backup storage** with:
 **Generated Resources:**
 
 - S3 Bucket (via ACK S3 controller)
+
+**How the backend uses it:**
+
+The bucket holds a JSON snapshot of the leaderboard at
+`leaderboard/scores.json`. It serves two purposes:
+
+1. **Backup** — rewritten after every accepted score submission. Best effort:
+   a failed upload is logged but never fails the submission, because the score
+   is already durable in DynamoDB by then.
+2. **Read fallback** — if a DynamoDB read *fails*, the backend falls back to the
+   S3 snapshot rather than serving an empty leaderboard. The fallback triggers
+   on an actual failure, not merely on DynamoDB being unconfigured.
+
+Enabled by `S3_ENABLED=true` and `S3_BUCKET` on the backend (set by the
+application RGD). The backend IAM role is granted `s3:GetObject` and
+`s3:PutObject` scoped to the `leaderboard/*` prefix only.
 
 ## 🚀 Deployment
 
@@ -233,26 +262,39 @@ Follow the main installation guide in the root [README.md](../../README.md#-inst
 2. **Wait for RGDs to be ready:**
 
    ```bash
-   kubectl get resourcegraphdefinitions -n kro
+   kubectl get rgd
    # All should show STATE: Active
    ```
 
 3. **Deploy instances:**
 
    ```bash
+   # Resolve the two account/cluster-specific values first. They are not
+   # committed: the account ID should not be published, and the OIDC provider
+   # ID is generated per cluster, so any stored value would be stale.
+   export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+   export OIDC_PROVIDER_ID=$(aws eks describe-cluster --name game2048-dev \
+     --region eu-west-1 --query 'cluster.identity.oidc.issuer' --output text | awk -F/ '{print $NF}')
+
    # Deploy S3 bucket
    kubectl apply -f instances/s3-instance.yaml
-   
+
    # Deploy DynamoDB tables
    kubectl apply -f instances/game2048-leaderboard-table.yaml
    kubectl apply -f instances/game2048-sessions-table.yaml
-   
-   # Deploy IAM role for backend
-   kubectl apply -f instances/game2048-backend-iam-role.yaml
-   
-   # Deploy the application
-   kubectl apply -f instances/game2048-app-instance.yaml
+
+   # Deploy IAM role for backend (needs both placeholders resolved)
+   sed -e "s/__AWS_ACCOUNT_ID__/$AWS_ACCOUNT_ID/g" \
+       -e "s/__OIDC_PROVIDER_ID__/$OIDC_PROVIDER_ID/g" \
+       instances/game2048-backend-iam-role.yaml | kubectl apply -f -
+
+   # Deploy the application (needs the account ID resolved)
+   sed -e "s/__AWS_ACCOUNT_ID__/$AWS_ACCOUNT_ID/g" \
+       instances/game2048-app-instance.yaml | kubectl apply -f -
    ```
+
+   > **Note:** `scripts/deploy_kro_application.sh` performs these substitutions
+   > automatically, and is the recommended path.
 
 4. **Verify deployment:**
 
@@ -260,8 +302,8 @@ Follow the main installation guide in the root [README.md](../../README.md#-inst
    # Check all resources
    kubectl get pods -n game-2048
    kubectl get ingress -n game-2048
-   kubectl get table -n kro
-   kubectl get bucket -n kro
+   kubectl get tables.dynamodb.services.k8s.aws -n kro
+   kubectl get buckets.s3.services.k8s.aws -n kro
    ```
 
 ## 🔧 Configuration
@@ -303,9 +345,9 @@ metadata:
 spec:
   name: "game2048"
   namespace: "game-2048"
-  backendImage: "emnalmdr/2048-backend:v6"
+  backendImage: "emnalmdr/2048-backend:v7"
   backendReplicas: 2
-  frontendImage: "emnalmdr/2048-frontend:v6"
+  frontendImage: "emnalmdr/2048-frontend:v7"
   frontendReplicas: 2
   # Container port: the frontend runs unprivileged and cannot bind port 80.
   frontendPort: 8080
@@ -320,30 +362,44 @@ spec:
 ### Check Resource Status
 
 ```bash
-# ResourceGraphDefinitions
-kubectl get resourcegraphdefinitions -n kro
+# ResourceGraphDefinitions are cluster-scoped — no namespace flag
+kubectl get rgd
+
+# kro instances (these live in the kro namespace)
+kubectl get dynamodbtable,gamesessionstable,iamroleforserviceaccount,s3backupbucket,game2048application -n kro
 
 # Application resources
 kubectl get all -n game-2048
 
-# AWS resources (via ACK)
-kubectl get tables.dynamodb.services.k8s.aws -n game-2048
-kubectl get buckets.s3.services.k8s.aws -n game-2048
+# AWS resources (via ACK) — created in the same namespace as their instance
+kubectl get tables.dynamodb.services.k8s.aws -n kro
+kubectl get buckets.s3.services.k8s.aws -n kro
+kubectl get roles.iam.services.k8s.aws -n kro
 ```
 
 ### View Logs
 
+kro and ACK are **EKS Capabilities**: they run on AWS-managed infrastructure
+outside your cluster, so there are no controller pods to tail. Their behaviour
+surfaces through the status conditions on the resources themselves.
+
 ```bash
-# KRO controller logs
-kubectl logs -n kro -l app.kubernetes.io/name=kro
+# Why an RGD is not Active
+kubectl get rgd <name> -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}'
+
+# Why an instance is not ACTIVE
+kubectl get <kind> <name> -n kro -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}'
+
+# Why an ACK resource has not synced (ACK.ResourceSynced / ACK.Terminal)
+kubectl get tables.dynamodb.services.k8s.aws -n kro -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.conditions[*]}  {.type}={.status} {.message}{"\n"}{end}{end}'
 
 # Application logs
 kubectl logs -n game-2048 -l app.kubernetes.io/component=backend
 kubectl logs -n game-2048 -l app.kubernetes.io/component=frontend
 
-# ACK controller logs
-kubectl logs -n ack-system -l app.kubernetes.io/name=ack-dynamodb-controller
-kubectl logs -n ack-system -l app.kubernetes.io/name=ack-s3-controller
+# Capability status
+aws eks describe-capability --cluster-name <cluster> --region <region> \
+  --capability-name <name> --query 'capability.status'
 ```
 
 ### Common Issues
@@ -385,11 +441,18 @@ kubectl delete -f dynamodb-rgd.yaml
 kubectl delete namespace game-2048
 ```
 
-### Remove KRO (Optional)
+### Remove the kro capability (Optional)
+
+kro is an EKS Capability, so it is removed through OpenTofu rather than a
+script — delete `module.kro` and `aws_eks_access_policy_association.kro` from
+`opentofu/eks.tf` and re-apply, or destroy the whole stack.
 
 ```bash
-../../scripts/kro_uninstall.sh
+cd ../../opentofu && tofu destroy
 ```
+
+> Capabilities use `delete_propagation_policy = RETAIN`, so AWS resources ACK
+> created are **not** deleted along with the capability.
 
 ## 🎯 Benefits of KRO Approach
 

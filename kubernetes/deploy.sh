@@ -43,18 +43,19 @@ fi
 
 print_status "Connected to Kubernetes cluster"
 
-# Build Docker images (if running locally)
-if [[ "${BUILD_IMAGES:-true}" == "true" ]]; then
-    print_status "Building Docker images..."
-    cd ..
-    docker-compose build
-    cd kubernetes
-    print_success "Docker images built successfully"
-fi
+# NOTE: images are pulled from the registry, not built here. These manifests
+# run on EKS, where a locally built `2048-backend:latest` tag cannot be pulled
+# by the nodes. Use ../scripts/build_and_push.sh to publish a new tag and update
+# the image references in the deployment manifests.
 
 # Apply Kubernetes manifests
 print_status "Creating namespace..."
 kubectl apply -f namespace.yaml
+
+# Auto Mode provides load balancing, but the IngressClass pointing at it has to
+# exist before an Ingress referencing "alb" can be reconciled.
+print_status "Applying Auto Mode IngressClass..."
+kubectl apply -f auto-mode-ingressclass.yaml
 
 print_status "Applying ConfigMap..."
 kubectl apply -f configmap.yaml

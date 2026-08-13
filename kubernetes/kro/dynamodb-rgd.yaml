@@ -13,9 +13,12 @@ spec:
       region: string | default="eu-west-1"
       billingMode: string | default="PAY_PER_REQUEST"
 
+    # Status fields must be CEL expressions naming where the value comes from.
+    # A bare type (`tableArn: string`) is rejected by kro with
+    # "status fields without expressions are not supported".
     status:
-      tableArn: string
-      tableStatus: string
+      tableArn: ${dynamodbTable.status.ackResourceMetadata.arn}
+      tableStatus: ${dynamodbTable.status.tableStatus}
 
   resources:
     # DynamoDB Table using ACK DynamoDB Controller
@@ -37,16 +40,31 @@ spec:
           attributeDefinitions:
             - attributeName: id
               attributeType: "S"
+            - attributeName: leaderboard
+              attributeType: "S"
             - attributeName: score
               attributeType: "N"
-            - attributeName: timestamp
-              attributeType: "S"
           globalSecondaryIndexes:
+            # ⚠️  Changing the key schema of an existing GSI is not possible in
+            # DynamoDB — UpdateTable rejects it with:
+            #   "The only Updates for index: ScoreIndex when TableThroughputMode
+            #    is PAY_PER_REQUEST can be to OnDemandThroughput, WarmThroughput"
+            # Upgrading a table created before this change therefore requires
+            # deleting and recreating the index (or the table). Back the data up
+            # first — the S3 snapshot written by the backend is one way to do it.
+            #
+            # Ranked reads of the leaderboard.
+            #
+            # `leaderboard` is a constant partition key ("global") written on
+            # every entry, with `score` as the sort key. DynamoDB Query needs an
+            # equality condition on the partition key, so the previous schema —
+            # score as HASH, timestamp as RANGE — could not answer "top N by
+            # score" at all, which is why the code fell back to a full Scan.
             - indexName: ScoreIndex
               keySchema:
-                - attributeName: score
+                - attributeName: leaderboard
                   keyType: HASH
-                - attributeName: timestamp
+                - attributeName: score
                   keyType: RANGE
               projection:
                 projectionType: ALL

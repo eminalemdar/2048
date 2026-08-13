@@ -15,9 +15,15 @@ spec:
       encryption: boolean | default=true
       blockPublicAccess: boolean | default=true
 
+    # Status fields must be CEL expressions naming where the value comes from.
+    # A bare type (`bucketArn: string`) is rejected by kro with
+    # "status fields without expressions are not supported".
+    #
+    # bucketDomainName is gone: the ACK Bucket resource exposes no such field.
+    # `location` is the closest real equivalent.
     status:
-      bucketArn: string
-      bucketDomainName: string
+      bucketArn: ${s3Bucket.status.ackResourceMetadata.arn}
+      bucketLocation: ${s3Bucket.status.location}
 
   resources:
     # S3 Bucket using ACK S3 Controller
