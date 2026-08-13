@@ -48,23 +48,32 @@ This directory contains KRO ResourceGraphDefinitions and instances for deploying
 
 ### **KRO vs Other Tools:**
 
-| Feature | KRO | Crossplane | Helm | Kustomize | Terraform |
-|---------|-----|------------|------|-----------|-----------|
-| **Maturity** | 🟡 Early stage | 🟢 Mature | 🟢 Very mature | 🟢 Mature | 🟢 Very mature |
-| **Custom APIs** | ✅ Creates new K8s APIs | ✅ Composite Resources | ❌ Templates only | ❌ Overlays only | ❌ External tool |
-| **Cloud Resources** | ✅ Via KRM (ACK, KCC, ASO) | ✅ Native providers | ❌ K8s only | ❌ K8s only | ✅ Native support |
-| **Status Tracking** | ✅ Built-in | ✅ Resource status | ❌ Limited | ❌ None | ✅ State file |
-| **GitOps Ready** | ✅ Native K8s | ✅ Native K8s | ✅ With ArgoCD | ✅ Native | ❌ Requires wrapper |
-| **Resource Relationships** | ✅ Automatic | ✅ Composition functions | ❌ Manual | ❌ Manual | ✅ Dependency graph |
-| **Learning Curve** | 🟡 Moderate | 🔴 Steep | 🟢 Easy | 🟢 Easy | 🟡 Moderate |
-| **Resource Composition** | ✅ ResourceGraphs | ✅ Composite Resources | ❌ Chart dependencies | ❌ Base + overlays | ✅ Modules |
-| **Multi-Cloud + KRM** | 🟡 Via multiple controllers (ACK/KCC/ASO) | ✅ Built-in providers | ❌ K8s only | ❌ K8s only | ✅ Multiple providers |
-| **Kubernetes Native** | ✅ Fully native | ✅ Fully native | ✅ Native | ✅ Native | ❌ External |
-| **K8s Resource Management** | ✅ Simple YAML templates | 🔴 Complex compositions | ✅ Simple templates | ✅ Simple overlays | ❌ External tool |
-| **Provider Management** | ✅ KRM controllers handle it | 🔴 Manual provider lifecycle | ✅ No providers needed | ✅ No providers needed | ✅ Simple providers |
-| **Debugging Complexity** | 🟡 Moderate | 🔴 Very complex | 🟢 Simple | 🟢 Simple | 🟡 Moderate |
-| **Resource Drift** | ✅ K8s reconciliation | 🔴 Provider-dependent | ✅ K8s reconciliation | ✅ K8s reconciliation | 🟡 State-based |
-| **Operational Overhead** | 🟢 Low | 🔴 High | 🟢 Low | 🟢 Low | 🟡 Moderate |
+> Verified against upstream releases in **August 2026**. Versions move; re-check
+> before relying on any row. Crossplane in particular changed substantially in
+> v2 — comparisons written against v1 are no longer accurate.
+
+| | kro | Crossplane | Helm | Kustomize | OpenTofu |
+|---|---|---|---|---|---|
+| **Latest release** | v0.9.3 | v2.3.4 | v4.2.4 | v5.8.1 | v1.12.5 |
+| **Maturity** | 🟡 Pre-1.0, API is `v1alpha1` | 🟢 CNCF **Graduated** (Oct 2025) | 🟢 CNCF Graduated | 🟢 Mature | 🟢 Very mature |
+| **Governance** | Kubernetes SIG Cloud Provider subproject | CNCF | CNCF | Kubernetes SIG CLI | Linux Foundation · CNCF Sandbox |
+| **License** | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 | MPL 2.0 |
+| **Creates custom APIs** | ✅ An RGD generates a CRD | ✅ XRD + Composition | ❌ Templates only | ❌ Overlays only | ❌ External tool |
+| **Composes K8s resources** | ✅ | ✅ **Any** K8s resource (new in v2) | ✅ Charts | ✅ Base + overlays | 🟡 Via the Kubernetes provider |
+| **Composes cloud resources** | 🟡 Via ACK / KCC / ASO controllers | ✅ Native providers | ❌ | ❌ | ✅ Native providers |
+| **Dependency ordering** | ✅ Resolved from the graph | ✅ Composition functions | 🟡 Hooks and weights | ❌ Manual | ✅ Dependency graph |
+| **Drift correction** | ✅ Continuous reconciliation | ✅ Continuous reconciliation | 🟡 Only on upgrade | ❌ Only on re-apply | 🟡 Only on apply |
+| **Status tracking** | ✅ Aggregated onto the instance | ✅ Per-resource conditions | 🟡 kstatus health (new in v4) | ❌ None | ✅ State file |
+| **GitOps** | ✅ Native | ✅ Native | ✅ Via Argo CD / Flux | ✅ Native | 🟡 Needs a runner |
+| **Learning curve** | 🟡 Moderate | 🔴 Steep | 🟢 Easy | 🟢 Easy | 🟡 Moderate |
+| **Operational overhead** | 🟢 Low — no controller here (EKS Capability) | 🟡 Controllers + providers to run | 🟢 Low | 🟢 Low | 🟡 State backend + runner |
+
+**Choosing between them:** kro and Crossplane overlap most. Crossplane is the
+mature choice with a far larger provider ecosystem; kro is smaller and leans on
+KRM controllers you already run — which is why it suits this project, where ACK
+and kro are both AWS-managed EKS Capabilities with nothing to install. Helm and
+Kustomize solve packaging and overlays, not resource composition, so they are
+complements rather than alternatives.
 
 ## 🎮 KRO in This Project
 
@@ -102,6 +111,9 @@ KRO enables **Kubernetes-native** management of AWS resources through ResourceGr
 ```text
 kubernetes/kro/
 ├── README.md                           # This file
+├── namespace.yaml                     # The `kro` namespace the instances live in.
+│                                      #   The kro capability runs outside the
+│                                      #   cluster and does NOT create it.
 ├── dynamodb-rgd.yaml                  # DynamoDB ResourceGraphDefinition
 ├── game-sessions-rgd.yaml             # Game sessions table RGD
 ├── iam-rgd.yaml                       # IAM role for service accounts RGD
@@ -355,7 +367,14 @@ spec:
   tableName: "game2048-leaderboard-dev"
   region: "eu-west-1"
   ingressClass: "alb"
+  # REQUIRED, and the only field with no default — the backend's IRSA
+  # annotation is built from it. The committed instance carries the literal
+  # __AWS_ACCOUNT_ID__ placeholder, substituted at deploy time (see above).
+  accountId: "123456789012"
 ```
+
+> Every other field has a default in the RGD schema, so a minimal instance needs
+> only `accountId`. `kubectl explain game2048application.spec` lists them all.
 
 ## 🔍 Monitoring and Troubleshooting
 
@@ -404,19 +423,33 @@ aws eks describe-capability --cluster-name <cluster> --region <region> \
 
 ### Common Issues
 
-1. **RGD not creating CRD:**
-   - Check KRO controller logs
-   - Verify RGD syntax with `kubectl describe resourcegraphdefinition`
+1. **RGD not Active / CRD not created:**
+   - Read the conditions, not logs — there are no controller pods (see above):
+     `kubectl get rgd <name> -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}'`
+   - `GraphAccepted=False` is a schema or CEL error. A status field declared as a
+     bare type rather than an expression is the usual cause.
+   - `KindReady=False` with `breaking changes detected` means the update removed
+     or altered a published CRD property. kro refuses that in place — the graph
+     still compiles, but the CRD is not updated. Restore the property, or delete
+     and recreate the RGD (which deletes every instance and its resources).
 
-2. **AWS resources not created:**
-   - Ensure ACK controllers are installed and running
-   - Check IAM permissions for service accounts
-   - Verify AWS credentials and region
+2. **Instance ACTIVE but AWS resource missing:**
+   - The ACK resource carries the real error. Check `ACK.ResourceSynced` and
+     `ACK.Terminal` conditions on it (see the jsonpath under View Logs).
+   - `ACK.Terminal=True` will not retry — it usually means an IAM denial or an
+     invalid field. Confirm the ACK capability's role can act on that service.
 
-3. **Application pods not starting:**
-   - Check image availability
-   - Verify ConfigMap and Secret references
-   - Check resource limits and node capacity
+3. **Instances fail with `namespaces "kro" not found`:**
+   - The kro capability runs outside the cluster and creates no namespace:
+     `kubectl apply -f namespace.yaml`
+
+4. **Application pods not starting:**
+   - Check the image tag exists and the nodes can pull it — EKS cannot pull a
+     locally built tag.
+   - Confirm the ServiceAccount carries `eks.amazonaws.com/role-arn`; a wrong
+     `accountId` on the instance produces a role ARN that does not exist, and
+     the backend then fails its DynamoDB calls rather than failing to start.
+   - Check resource limits and node capacity.
 
 ## 🧹 Cleanup
 
@@ -454,24 +487,34 @@ cd ../../opentofu && tofu destroy
 > Capabilities use `delete_propagation_policy = RETAIN`, so AWS resources ACK
 > created are **not** deleted along with the capability.
 
-## 🎯 Benefits of KRO Approach
+## 🎯 Benefits of the KRO Approach
 
-**Kubernetes-Native:**
+- **One API for both layers.** A single `Game2048Application` covers the
+  Kubernetes workloads and the AWS resources behind them, so `kubectl` and
+  existing RBAC are the only tools needed.
+- **Dependencies are ordered for you.** kro resolves the graph — the IAM role is
+  created before the ServiceAccount that references it — instead of leaving the
+  ordering to a script.
+- **Status in one place.** Each instance aggregates the readiness of everything
+  it created, and ACK surfaces AWS-side errors as conditions on its own
+  resources.
+- **Reusable and parameterised.** The same RGD deploys dev and prod by changing
+  instance values, and every field except `accountId` has a default.
 
-- ✅ **Declarative** - Define desired state in YAML
-- ✅ **GitOps friendly** - Version control and CI/CD integration
-- ✅ **kubectl compatible** - Use familiar Kubernetes tools
+### Maturity
 
-**Composable:**
+kro now lives at [`kubernetes-sigs/kro`](https://github.com/kubernetes-sigs/kro)
+as a subproject of Kubernetes SIG Cloud Provider, having moved from the original
+`kro-run` organisation. Older links and articles still point at the old
+location.
 
-- ✅ **Reusable RGDs** - Define once, use many times
-- ✅ **Parameterized** - Customize instances for different environments
-- ✅ **Modular** - Separate concerns (database, storage, application)
+It is **pre-1.0** — the API here is `kro.run/v1alpha1` (controller v0.9.2) and
+may change between releases. Two limits worth knowing before building on it:
 
-**Production Ready:**
+- A published CRD property **cannot be removed** in place; kro rejects the update
+  as a breaking change (see Common Issues).
+- `v1alpha1` offers no conversion between schema versions, so a breaking RGD
+  change means recreating the RGD and its instances.
 
-- ✅ **Resource relationships** - Proper dependencies and ordering
-- ✅ **Status tracking** - Monitor resource creation and health
-- ✅ **Error handling** - Built-in validation and error reporting
-
-This approach provides **Infrastructure as Code** for both Kubernetes and AWS resources, managed entirely through Kubernetes APIs! 🚀
+For a demo this is fine. Pin the kro version and rehearse RGD upgrades before
+depending on it for anything long-lived.

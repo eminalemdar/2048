@@ -2,6 +2,42 @@
 
 A modern, responsive 2048 game built with React frontend and Go backend, featuring smooth animations, dark/light themes, leaderboard system, and persistent score storage.
 
+## Contents
+
+**Just want to play?** [Running Locally](#-running-locally) needs only Docker.
+
+**Deploying to AWS?** Read [Installation Guide](#-installation-guide) — it is the
+one path that is kept current. The two sections after it are alternatives; deploy
+one or the other, never both.
+
+| | |
+|---|---|
+| [🎮 Features](#-features) | What the game does |
+| [🏗️ Architecture](#️-architecture) | Stack at a glance |
+| [🚀 Running Locally](#-running-locally) | Docker Compose, no AWS account |
+| [📋 Installation Guide](#-installation-guide) | **Start here for AWS** — EKS Auto Mode + kro |
+| [☁️ AWS Infrastructure Deployment (Manual)](#️-aws-infrastructure-deployment-manual) | OpenTofu by hand, without the script |
+| [☸️ Kubernetes Application Deployment (Plain manifests, without kro)](#️-kubernetes-application-deployment-plain-manifests-without-kro) | Alternative to the kro path |
+| [🎛️ KRO (Kube Resource Orchestrator) Deployment](#️-kro-kube-resource-orchestrator-deployment) | What kro is and why it is used here |
+| [📜 Script Reference](#-script-reference) | Every script and its arguments |
+| [🧹 Cleanup](#-cleanup) | Tear down the app and the infrastructure |
+| [🔧 Troubleshooting](#-troubleshooting) | Common failures and their checks |
+| [🎯 Game Features](#-game-features) | Controls, leaderboard, storage model |
+| [🛠️ Development](#️-development) | Running backend and frontend directly |
+
+### Which doc owns what
+
+This file is the entry point and the end-to-end walkthrough. Details live with
+the code they describe — when something changes, update it **there** and link to
+it from here rather than restating it, which is how the version numbers and
+feature claims in this repo drifted apart in the first place.
+
+| Doc | Authoritative for |
+|-----|-------------------|
+| [opentofu/README.md](opentofu/README.md) | OpenTofu variables and defaults, EKS Capabilities, cost and permissions warnings |
+| [kubernetes/README.md](kubernetes/README.md) | Plain-manifest deployment, the DynamoDB/IAM prerequisites it assumes, autoscaling |
+| [kubernetes/kro/README.md](kubernetes/kro/README.md) | What kro is, each ResourceGraphDefinition, and what it creates |
+
 ## 🎮 Features
 
 - **Smooth tile movements** with polished animations
@@ -36,7 +72,7 @@ A modern, responsive 2048 game built with React frontend and Go backend, featuri
 
 ```bash
 # Clone and run
-docker-compose up --build
+docker compose up --build
 
 # Access the game
 open http://localhost:3000
@@ -140,8 +176,9 @@ kubectl api-resources | grep services.k8s.aws    # ACK resource types
 Use the automated deployment script that handles proper ordering and waits for resources:
 
 ```bash
-# Deploy everything with proper dependency management
-./scripts/deploy_kro_application.sh
+# Deploy everything with proper dependency management.
+# Both arguments are optional and default to game2048-dev / eu-west-1.
+./scripts/deploy_kro_application.sh game2048-dev eu-west-1
 ```
 
 This script will:
@@ -217,12 +254,20 @@ kubectl get ingress game2048-ingress -n game-2048 -o jsonpath='{.status.loadBala
 
 Your 2048 game application is now deployed with:
 
-- ✅ **Scalable backend** (2 replicas with auto-scaling)
-- ✅ **Responsive frontend** (2 replicas with load balancing)
-- ✅ **Persistent leaderboard** (DynamoDB with automatic backups)
-- ✅ **Backup storage** (S3 bucket for data archival)
-- ✅ **Secure access** (IAM roles with least privilege)
+- ✅ **Backend** (2 fixed replicas)
+- ✅ **Frontend** (2 fixed replicas behind the ALB)
+- ✅ **Persistent leaderboard** (DynamoDB, with an S3 snapshot as backup and
+  read fallback)
+- ✅ **Secure access** (IRSA — the backend's IAM role is scoped to its two
+  tables and the backup bucket's `leaderboard/*` prefix)
 - ✅ **High availability** (Multi-AZ deployment)
+
+> **No autoscaling.** Replica counts are fixed at 2. The kro
+> `Game2048Application` creates no HorizontalPodAutoscaler, and EKS Auto Mode
+> provides no metrics API for one to read, so nothing scales on load. An HPA
+> does exist on the plain-manifest path — see
+> [kubernetes/README.md](kubernetes/README.md) for what it needs to work.
+> (Auto Mode still scales *nodes* to fit the pods; that is not pod autoscaling.)
 
 ### Verification
 
@@ -369,7 +414,7 @@ kubectl api-resources | grep services.k8s.aws
 
 ```bash
 # Deploy ResourceGraphDefinitions and instances
-./scripts/deploy_kro_application.sh
+./scripts/deploy_kro_application.sh game2048-dev eu-west-1
 
 # Check deployment status
 kubectl get resourcegraphdefinitions      # cluster-scoped, no -n
@@ -412,7 +457,7 @@ The following scripts are available to automate deployment tasks:
 ./scripts/deploy_kro_application.sh game2048-dev eu-west-1
 
 # Build and push images (tag defaults to the git short SHA)
-./scripts/build_and_push.sh v7
+./scripts/build_and_push.sh v10
 ```
 
 ## 🧹 Cleanup
@@ -565,7 +610,7 @@ kubectl get table -n kro
 
 ## 🛠️ Development
 
-`docker-compose up --build` is the easiest path — it starts DynamoDB Local and
+`docker compose up --build` is the easiest path — it starts DynamoDB Local and
 creates the tables. To run the pieces directly:
 
 ### Backend (Go 1.26)

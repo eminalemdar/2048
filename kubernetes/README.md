@@ -70,7 +70,7 @@ The deployments reference published images (`emnalmdr/2048-backend:v9`,
 cannot pull a local `2048-backend:latest` tag. To ship your own build:
 
 ```bash
-../scripts/build_and_push.sh v8      # builds + pushes multi-arch images
+../scripts/build_and_push.sh v10     # builds + pushes multi-arch images
 # then update the image tags in backend-deployment.yaml / frontend-deployment.yaml
 ```
 

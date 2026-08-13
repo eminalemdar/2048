@@ -16,8 +16,8 @@ This directory contains OpenTofu configuration to provision core AWS infrastruct
 
 ### Application Resources (KRO)
 
-- **DynamoDB Table** for leaderboard storage → Managed by [KRO](https://kro.dev)
-- **S3 Bucket** for backup storage → Managed by [KRO](https://kro.dev)
+- **DynamoDB Table** for leaderboard storage → Managed by [kro](https://kro.run)
+- **S3 Bucket** for backup storage → Managed by [kro](https://kro.run)
 
 ## 🚀 Quick Start
 
@@ -77,7 +77,7 @@ This script will:
 | `project_name` | Project name | `game2048` |
 | `environment` | Environment (dev/staging/prod) | `dev` |
 | `vpc_cidr` | VPC CIDR block | `172.16.0.0/16` |
-| `eks_cluster_version` | EKS Kubernetes version | `1.33` |
+| `eks_cluster_version` | EKS Kubernetes version | `1.36` |
 | `eks_auto_mode_node_pools` | Auto Mode node pools to enable | `["system", "general-purpose"]` |
 | `ack_iam_role_policies` | Policies on the ACK capability role ⚠️ | `AdministratorAccess` |
 | `kro_access_policy_arn` | Access policy for the kro capability ⚠️ | `AmazonEKSClusterAdminPolicy` |
@@ -114,8 +114,9 @@ This script will:
 
 - **EKS Auto Mode** right-sizes and consolidates nodes automatically, and
   scales to zero nodes when nothing is scheduled
-- **Single NAT gateway per AZ** for high availability (two NAT gateways —
-  set `single_nat_gateway = true` in `vpc.tf` to halve that cost)
+- **One NAT gateway per AZ** — two in total. This is a deliberate cost *increase*
+  for availability: a single shared gateway is cheaper but becomes a
+  cross-AZ dependency. Set `single_nat_gateway = true` in `vpc.tf` to halve it.
 - **Proper resource tagging** for cost allocation
 
 > Auto Mode adds a management fee per vCPU-hour on top of EC2, and each EKS
@@ -238,38 +239,28 @@ removal of the capability. Clean them up separately.
 
 ## 🎯 Next Steps
 
-After deploying the infrastructure, follow the complete installation guide:
+`tofu apply` here also enables the ACK and kro capabilities — there is **nothing
+to install into the cluster** (see [EKS Capabilities](#-eks-capabilities-ack-and-kro)
+above). What remains is the application:
 
 1. **✅ Deploy core infrastructure** with OpenTofu (this directory)
-2. **Install ACK controllers** for AWS resource management
-3. **Install KRO** on your EKS cluster  
-4. **Deploy KRO ResourceGraphDefinitions** for application resources
-5. **Deploy application instances** using KRO
+2. **Deploy the ResourceGraphDefinitions and application instances**:
 
-See the main [README.md](../README.md#-installation-guide) for the complete step-by-step process.
+   ```bash
+   ../scripts/deploy_kro_application.sh game2048-dev eu-west-1
+   ```
 
-## 🎮 Complete 2048 Game Deployment
+See the main [README.md](../README.md#-installation-guide) for the complete
+step-by-step process, and [kubernetes/kro/README.md](../kubernetes/kro/README.md)
+for what each RGD creates.
 
-This infrastructure supports the complete 2048 game application with:
+## 🎮 What This Supports
 
-- ✅ **Scalable EKS cluster** with Auto Mode
-- ✅ **DynamoDB integration** for persistent leaderboard
-- ✅ **IAM roles with IRSA** for secure AWS access
-- ✅ **ALB ingress** for external access
-- ✅ **Auto-scaling** and high availability
-- ✅ **Production-ready** security and networking
+This infrastructure is the foundation for the 2048 game: an EKS Auto Mode
+cluster, DynamoDB for the leaderboard and game sessions, an S3 backup bucket,
+IRSA for the backend's AWS access, and an ALB for external traffic.
 
-The infrastructure provides the foundation for:
-
-- **Automatic score submission** when games end
-- **Persistent leaderboard** across pod restarts
-- **Multi-pod consistency** with DynamoDB storage
-- **Secure AWS resource access** via service accounts
-
-This approach provides:
-
-- ✅ **Separation of concerns** (infrastructure vs application resources)
-- ✅ **Best practices** using community modules
-- ✅ **Kubernetes-native** resource management with KRO and ACK
-- ✅ **Maintainable** and **scalable** architecture
-- ✅ **Production-ready** 2048 game deployment
+> **Not** included: horizontal pod autoscaling. The kro `Game2048Application`
+> does not create an HPA, and EKS Auto Mode ships no metrics API, so nothing
+> scales on load. See [kubernetes/README.md](../kubernetes/README.md) for the
+> HPA that exists on the plain-manifest path and what it needs to work.
