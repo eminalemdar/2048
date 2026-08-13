@@ -129,9 +129,26 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           ### Images built
 
-          If these were pushed, update the tags that reference them:
+          If these were pushed, update the tags that reference them. All ten
+          live under kubernetes/, and a stale one in the docs is as misleading
+          as a stale one in a manifest:
 
-          - `kubernetes/kro/instances/game2048-app-instance.yaml`
+          **Deployed resources**
+
+          - `kubernetes/kro/instances/game2048-app-instance.yaml` — the kro path,
+            and the only file that rolls the running pods
           - `kubernetes/kro/game2048-app-rgd.yaml` (schema defaults)
           - `kubernetes/backend-deployment.yaml` / `frontend-deployment.yaml`
+            (plain-manifest path)
+
+          **Docs**
+
+          - `kubernetes/README.md`
+          - `kubernetes/kro/README.md`
+
+          Find any that were missed with:
+
+          ```
+          grep -rn "2048-backend:v\|2048-frontend:v" kubernetes/
+          ```
           EOF

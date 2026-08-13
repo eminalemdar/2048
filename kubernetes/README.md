@@ -65,8 +65,8 @@ kubectl apply -f hpa.yaml
 
 ### Container images
 
-The deployments reference published images (`emnalmdr/2048-backend:v8`,
-`emnalmdr/2048-frontend:v8`). `deploy.sh` does **not** build locally: EKS nodes
+The deployments reference published images (`emnalmdr/2048-backend:v9`,
+`emnalmdr/2048-frontend:v9`). `deploy.sh` does **not** build locally: EKS nodes
 cannot pull a local `2048-backend:latest` tag. To ship your own build:
 
 ```bash

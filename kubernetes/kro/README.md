@@ -345,9 +345,9 @@ metadata:
 spec:
   name: "game2048"
   namespace: "game-2048"
-  backendImage: "emnalmdr/2048-backend:v8"
+  backendImage: "emnalmdr/2048-backend:v9"
   backendReplicas: 2
-  frontendImage: "emnalmdr/2048-frontend:v8"
+  frontendImage: "emnalmdr/2048-frontend:v9"
   frontendReplicas: 2
   # Container port: the frontend runs unprivileged and cannot bind port 80.
   frontendPort: 8080
