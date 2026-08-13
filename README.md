@@ -266,9 +266,44 @@ tofu apply
 aws eks --region eu-west-1 update-kubeconfig --name game2048-dev
 ```
 
-## ☸️ Kubernetes Application Deployment (Traditional)
+## ☸️ Kubernetes Application Deployment (Plain manifests, without kro)
 
-For traditional Kubernetes deployment without KRO:
+This is the **alternative** to the kro path in Step 3. It deploys the same
+application from plain manifests in `kubernetes/`, for a cluster where you do
+not want kro — or when you want to see the raw resources without an
+abstraction over them.
+
+> ### ⚠️ Pick one path — do not run both against the same cluster
+>
+> The two paths deploy the **same application under different resource names**,
+> so they do not update or replace one another. Running this one against a
+> cluster that already has the kro deployment gives you a **second, parallel
+> copy of the app — including a second ALB Ingress, and therefore a second load
+> balancer you will be billed for.**
+>
+> | Resource | kro path (Step 3) | Plain manifests (this section) |
+> |----------|-------------------|-------------------------------|
+> | Deployments | `game2048-backend`, `game2048-frontend` | `backend-deployment`, `frontend-deployment` |
+> | Services | `game2048-backend-service`, `game2048-frontend-service` | `backend-service`, `frontend-service` |
+> | Ingress | `game2048-ingress` | `game-2048-ingress` |
+>
+> Check which one is live before deploying:
+>
+> ```bash
+> kubectl get deploy -n game-2048
+> ```
+>
+> To switch paths, remove the old one first — the cleanest cut is
+> `kubectl delete namespace game-2048` (for the kro path, delete the instances
+> first, see [Cleanup](#-cleanup)).
+
+### Prerequisites specific to this path
+
+Unlike the kro path, these manifests **only deploy the workloads**. The AWS
+resources the backend needs — the two DynamoDB tables, the optional S3 bucket,
+and the IRSA role — are *not* created for you. Create them first; see the
+"Database Requirements" and "IAM Requirements" sections of
+[kubernetes/README.md](kubernetes/README.md).
 
 ### Deploy Application
 
@@ -279,9 +314,12 @@ cd kubernetes
 
 > **Note**: these manifests now target EKS Auto Mode's ALB, so they require a
 > cluster (the old `nginx` IngressClass and `2048.local` host entry are gone).
-> Apply `kubernetes/auto-mode-ingressclass.yaml` first.
+> `deploy.sh` applies `auto-mode-ingressclass.yaml` before the Ingress for you.
 
 ### Access
+
+The names below are the **plain-manifest** names. On the kro path use
+`svc/game2048-frontend-service` and ingress `game2048-ingress` instead.
 
 ```bash
 # Port forward (no ALB needed)
@@ -291,6 +329,12 @@ kubectl port-forward -n game-2048 svc/frontend-service 3000:80
 kubectl get ingress game-2048-ingress -n game-2048 \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
+
+> **Autoscaling**: `deploy.sh` also applies `hpa.yaml`. Those HPAs target the
+> plain-manifest deployment names, so they are correct for this path only. They
+> also require the **metrics API**, which EKS Auto Mode does not provide out of
+> the box — without a metrics-server the HPAs report `<unknown>/70%` and never
+> scale. See [kubernetes/README.md](kubernetes/README.md#-autoscaling).
 
 ## 🎛️ KRO (Kube Resource Orchestrator) Deployment
 
@@ -317,16 +361,18 @@ kubectl api-resources | grep kro.run
 kubectl api-resources | grep services.k8s.aws
 ```
 
+> This is the **recommended** path. The alternative is the
+> "Kubernetes Application Deployment (Plain manifests, without kro)" section
+> above. Deploy one or the other, not both — see the warning there.
+
 ### Deploy with KRO
 
 ```bash
-cd kubernetes/kro
-
 # Deploy ResourceGraphDefinitions and instances
-./deploy-kro.sh --aws-account-id YOUR_ACCOUNT_ID --bucket-suffix mycompany
+./scripts/deploy_kro_application.sh
 
 # Check deployment status
-kubectl get resourcegraphdefinitions -n kro
+kubectl get resourcegraphdefinitions      # cluster-scoped, no -n
 kubectl get all -n game-2048
 ```
 
@@ -335,7 +381,6 @@ kubectl get all -n game-2048
 - **Simplified operations** - Single command deploys infrastructure + application
 - **Environment consistency** - Same definitions, different configurations
 - **Resource composition** - Manage related resources as a single unit
-- **Status tracking** - Built-in monitoring of resource creation and health
 - **Status tracking** - Built-in monitoring of resource creation and health
 
 See [kubernetes/kro/README.md](kubernetes/kro/README.md) for detailed KRO documentation and comparison with other tools.

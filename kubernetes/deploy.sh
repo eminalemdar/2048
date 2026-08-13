@@ -71,8 +71,23 @@ kubectl apply -f frontend-service.yaml
 print_status "Setting up ingress..."
 kubectl apply -f ingress.yaml
 
+# The HPAs here target this path's deployment names (backend-deployment /
+# frontend-deployment) and belong to the plain-manifest path only — the kro
+# ResourceGraphDefinition deliberately does not manage an HPA.
+#
+# They read resource metrics from metrics.k8s.io, served by metrics-server. EKS
+# Auto Mode does NOT provide it: it registers v1.metrics.eks.amazonaws.com,
+# which backs the console's metrics view and does not satisfy an HPA. Apply them
+# either way — they start working the moment metrics-server is installed — but
+# say so plainly rather than leaving them stuck at <unknown>/70%.
 print_status "Setting up auto-scaling..."
 kubectl apply -f hpa.yaml
+
+if ! kubectl get apiservices 2>/dev/null | grep -q "metrics.k8s.io"; then
+    print_warning "No metrics.k8s.io API found — these HPAs will report <unknown> and never scale."
+    print_warning "Install metrics-server to activate them:"
+    print_warning "  kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+fi
 
 # Wait for deployments to be ready
 print_status "Waiting for deployments to be ready..."
@@ -92,7 +107,17 @@ kubectl get ingress -n game-2048
 
 echo ""
 print_success "🎉 2048 Game deployed successfully!"
-print_status "Access the game at: http://2048.local (add to /etc/hosts if needed)"
+# The Ingress carries no host rule: Auto Mode's ALB answers on its own generated
+# DNS name, so there is nothing to add to /etc/hosts. The address can take a
+# minute to appear while the load balancer provisions.
+ALB_HOSTNAME=$(kubectl get ingress game-2048-ingress -n game-2048 \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+if [ -n "$ALB_HOSTNAME" ]; then
+    print_status "Access the game at: http://${ALB_HOSTNAME}"
+else
+    print_status "The ALB is still provisioning. Once it is ready, get the address with:"
+    print_status "  kubectl get ingress game-2048-ingress -n game-2048"
+fi
 print_status "Or use port-forward: kubectl port-forward -n game-2048 svc/frontend-service 3000:80"
 
 echo ""

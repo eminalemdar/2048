@@ -2,10 +2,23 @@
 
 This directory contains plain Kubernetes manifests for deploying the 2048 game.
 
-> **⚠️ Note**: the **KRO-based approach** in the `kro/` directory is the
-> recommended path. It provisions the AWS resources (DynamoDB tables, S3 bucket,
-> IAM role) as part of the deployment. The manifests here assume those resources
-> already exist and only deploy the workloads.
+> **⚠️ The KRO-based approach in the `kro/` directory is the recommended path.**
+> It provisions the AWS resources (DynamoDB tables, S3 bucket, IAM role) as part
+> of the deployment. The manifests here assume those resources already exist and
+> only deploy the workloads.
+>
+> **Deploy one path or the other, never both against the same cluster.** The two
+> use different resource names, so neither updates the other — you would end up
+> with two parallel copies of the app and **two ALB Ingresses, meaning two load
+> balancers to pay for**:
+>
+> | Resource | kro (`kro/`) | plain manifests (here) |
+> |----------|--------------|------------------------|
+> | Deployments | `game2048-backend`, `game2048-frontend` | `backend-deployment`, `frontend-deployment` |
+> | Services | `game2048-backend-service`, `game2048-frontend-service` | `backend-service`, `frontend-service` |
+> | Ingress | `game2048-ingress` | `game-2048-ingress` |
+>
+> `kubectl get deploy -n game-2048` tells you which one is live.
 
 ## 🏗️ Prerequisites
 
@@ -72,7 +85,7 @@ cannot pull a local `2048-backend:latest` tag. To ship your own build:
 | `frontend-deployment.yaml` | Frontend deployment (2 replicas, non-root, serves on **8080**) |
 | `frontend-service.yaml` | Frontend service (ClusterIP, port 80 → targetPort 8080) |
 | `ingress.yaml` | ALB ingress for external access |
-| `hpa.yaml` | Horizontal Pod Autoscalers (backend + frontend) |
+| `hpa.yaml` | Horizontal Pod Autoscalers (backend + frontend) — **needs a metrics API, see [Autoscaling](#-autoscaling)** |
 | `configmap.yaml` | Application configuration (currently unused by the deployments) |
 
 ### A note on ports
@@ -208,6 +221,37 @@ kubectl describe ingress game-2048-ingress -n game-2048
 
 # Confirm the IngressClass points at Auto Mode
 kubectl get ingressclass alb -o jsonpath='{.spec.controller}'   # eks.amazonaws.com/alb
+```
+
+## 📈 Autoscaling
+
+`hpa.yaml` defines HPAs for the backend (2–10 replicas) and frontend (2–5), both
+on CPU/memory targets. Two things to know before relying on it:
+
+**1. It belongs to this path only.** Its `scaleTargetRef` names
+`backend-deployment` / `frontend-deployment`, which exist only in these plain
+manifests. The kro `Game2048Application` does not include an HPA at all, so on
+the kro path this file does nothing.
+
+**2. EKS Auto Mode does not ship a metrics API.** HPAs read resource metrics
+from `metrics.k8s.io`, which is served by metrics-server. Auto Mode registers
+only `v1.metrics.eks.amazonaws.com` — that backs the console's metrics view and
+is **not** a substitute. Verify before applying `hpa.yaml`:
+
+```bash
+kubectl top nodes
+# "error: Metrics API not available"  -> no metrics-server, HPAs will not scale
+
+kubectl get apiservices | grep metrics.k8s.io
+# no output -> same conclusion
+```
+
+Without it the HPAs come up but report `<unknown>/70%` for their targets and
+never scale. Install metrics-server first if you want working autoscaling:
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl top nodes    # should now return values
 ```
 
 ## 🧹 Cleanup
