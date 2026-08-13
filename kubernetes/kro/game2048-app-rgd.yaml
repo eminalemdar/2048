@@ -40,7 +40,25 @@ spec:
       accountId: string
       backendRoleName: string | default="game2048-backend-role"
 
-      # Ingress configuration
+      # Ingress configuration.
+      #
+      # ⚠️ `hostname` is INERT — no template below references it. The Ingress
+      # emits no host rule on purpose: an internet-facing ALB is reached through
+      # its own generated DNS name, the same decision documented in
+      # kubernetes/ingress.yaml. It survives the migration that removed the
+      # `host: 2048.local` rule.
+      #
+      # It cannot simply be deleted. kro guards published CRDs against breaking
+      # schema changes and rejects the update:
+      #
+      #   cannot update CRD game2048applications.kro.run:
+      #   breaking changes detected: Property hostname was removed
+      #
+      # The RGD then goes Inactive (KindReady=False) while the graph itself
+      # still compiles. Dropping it therefore means deleting and recreating the
+      # RGD, which takes every instance and all their resources with it — too
+      # destructive for a cosmetic field. Remove it at the next intentional
+      # teardown, and until then do not read any meaning into its value.
       hostname: string | default="2048.local"
       ingressClass: string | default="alb"
 

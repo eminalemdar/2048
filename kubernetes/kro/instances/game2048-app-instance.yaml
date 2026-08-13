@@ -20,5 +20,7 @@ spec:
   # Filled in by scripts/deploy_kro_application.sh from the target AWS account.
   accountId: "__AWS_ACCOUNT_ID__"
   backendRoleName: "game2048-backend-role"
+  # Inert: nothing in the RGD reads this. Kept only because kro rejects removing
+  # a published CRD property — see the note in game2048-app-rgd.yaml.
   hostname: "2048.local"
   ingressClass: "alb"

@@ -200,8 +200,25 @@ verify_cleanup() {
         log_info "✅ Namespace 'game-2048' removed"
     fi
     
+    # Counting pattern used throughout this function:
+    #
+    #   count=$(kubectl ... | grep -c PATTERN || true)
+    #
+    # `grep -c` prints the count itself, and `|| true` swallows its exit status
+    # of 1 when nothing matches WITHOUT adding output. The previous form —
+    # `| grep PATTERN | wc -l || echo "0"` — was broken under `set -o pipefail`:
+    # grep's no-match failed the whole pipeline even though wc had already
+    # printed "0", so `|| echo "0"` appended a second line and the variable
+    # became "0\n0". The `-eq` below then failed with "integer expression
+    # expected" and fell through to the else branch, reporting resources as
+    # still existing at exactly the moment cleanup had succeeded.
+    #
+    # Assignment is also split from `local`, which otherwise masks the exit
+    # status of the substitution (SC2155).
+
     # Check DynamoDB tables
-    local tables=$(kubectl get table -n kro --no-headers 2>/dev/null | grep -E "game2048-(leaderboard|sessions)-dev" | wc -l || echo "0")
+    local tables
+    tables=$(kubectl get table -n kro --no-headers 2>/dev/null | grep -cE "game2048-(leaderboard|sessions)-dev" || true)
     if [ "$tables" -eq 0 ]; then
         log_info "✅ DynamoDB tables removed"
     else
@@ -209,7 +226,8 @@ verify_cleanup() {
     fi
     
     # Check S3 buckets
-    local buckets=$(kubectl get bucket -n kro --no-headers 2>/dev/null | grep "game2048-backup-dev" | wc -l || echo "0")
+    local buckets
+    buckets=$(kubectl get bucket -n kro --no-headers 2>/dev/null | grep -c "game2048-backup-dev" || true)
     if [ "$buckets" -eq 0 ]; then
         log_info "✅ S3 buckets removed"
     else
@@ -217,7 +235,8 @@ verify_cleanup() {
     fi
     
     # Check IAM roles
-    local iam_roles=$(kubectl get role.iam.services.k8s.aws -A --no-headers 2>/dev/null | grep "game2048-backend-role" | wc -l || echo "0")
+    local iam_roles
+    iam_roles=$(kubectl get role.iam.services.k8s.aws -A --no-headers 2>/dev/null | grep -c "game2048-backend-role" || true)
     if [ "$iam_roles" -eq 0 ]; then
         log_info "✅ IAM roles removed"
     else
@@ -225,11 +244,17 @@ verify_cleanup() {
     fi
     
     # Check RGDs
-    local rgds=$(kubectl get rgd -n kro --no-headers 2>/dev/null | grep -E "(iam-role-for-service-account|dynamodb-table|game-sessions-table|s3-backup-bucket|game2048-application)" | wc -l || echo "0")
-    if [ "$rgds" -eq 0 ]; then
+    # Named rgd_count, not rgds: remove_rgds() above uses `rgds` for an array of
+    # filenames, and reusing the name for a string made ShellCheck flag SC2178 /
+    # SC2128 across the two functions. They are separate `local` scopes so there
+    # was never a real conflict, but the distinct name is clearer than a
+    # suppression comment.
+    local rgd_count
+    rgd_count=$(kubectl get rgd -n kro --no-headers 2>/dev/null | grep -cE "(iam-role-for-service-account|dynamodb-table|game-sessions-table|s3-backup-bucket|game2048-application)" || true)
+    if [ "$rgd_count" -eq 0 ]; then
         log_info "✅ ResourceGraphDefinitions removed"
     else
-        cleanup_issues+=("$rgds ResourceGraphDefinitions still exist")
+        cleanup_issues+=("$rgd_count ResourceGraphDefinitions still exist")
     fi
     
     # Report results

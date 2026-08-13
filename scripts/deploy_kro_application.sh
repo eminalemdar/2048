@@ -109,7 +109,10 @@ wait_for_rgd() {
     log_info "Waiting for RGD '${rgd_name}' to become active..."
     
     while [ $elapsed -lt $timeout ]; do
-        local state=$(kubectl get rgd "$rgd_name" -n kro -o jsonpath='{.status.state}' 2>/dev/null || echo "NotFound")
+        # `|| echo "NotFound"` is safe here: on failure kubectl writes nothing to
+        # stdout (errors go to /dev/null), so the fallback is the only output.
+        local state
+        state=$(kubectl get rgd "$rgd_name" -n kro -o jsonpath='{.status.state}' 2>/dev/null || echo "NotFound")
         
         case "$state" in
             "Active")
@@ -308,7 +311,14 @@ verify_deployment() {
     
     # Check DynamoDB tables
     log_info "Checking DynamoDB tables..."
-    local tables=$(kubectl get table -n kro --no-headers 2>/dev/null | wc -l)
+    # `|| true` rather than `|| echo "0"`: wc has already printed its count by
+    # the time a failing kubectl trips `set -o pipefail`, so echoing a fallback
+    # would append a second line and break the numeric test below. `true` adds
+    # no output. Splitting the assignment from `local` also means the
+    # substitution's exit status is no longer masked (SC2155) — hence the
+    # explicit fallback, without which `set -e` would abort here.
+    local tables
+    tables=$(kubectl get table -n kro --no-headers 2>/dev/null | grep -c "" || true)
     if [ "$tables" -ge 2 ]; then
         log_info "✅ DynamoDB tables: $tables found"
         kubectl get table -n kro
@@ -318,7 +328,8 @@ verify_deployment() {
     
     # Check S3 bucket
     log_info "Checking S3 bucket..."
-    local s3_buckets=$(kubectl get bucket -n kro --no-headers 2>/dev/null | wc -l)
+    local s3_buckets
+    s3_buckets=$(kubectl get bucket -n kro --no-headers 2>/dev/null | grep -c "" || true)
     if [ "$s3_buckets" -ge 1 ]; then
         log_info "✅ S3 bucket: $s3_buckets found"
         kubectl get bucket -n kro
@@ -362,8 +373,21 @@ verify_deployment() {
         fi
         
         # Show final pod status
-        local pods_ready=$(kubectl get pods -n game-2048 --no-headers 2>/dev/null | grep -c "Running.*1/1\|Running.*2/2" || echo "0")
-        local pods_total=$(kubectl get pods -n game-2048 --no-headers 2>/dev/null | wc -l || echo "0")
+        # `grep -c` already prints 0 when nothing matches, and then exits 1. The
+        # previous `|| echo "0"` appended a SECOND zero, so pods_ready became
+        # "0\n0" and the `-ge` test below failed with "integer expression
+        # expected" — precisely when no pods were ready, i.e. the failure this
+        # check exists to report. `|| true` swallows the status without output.
+        # Column order is NAME, READY (1/1), STATUS (Running) — the ready count
+        # comes FIRST. The pattern used to be "Running.*1/1", which can never
+        # match that layout, so this reported 0 ready pods on every successful
+        # deployment. Match the real order instead.
+        local pods_ready
+        pods_ready=$(kubectl get pods -n game-2048 --no-headers 2>/dev/null | grep -c "1/1.*Running\|2/2.*Running" || true)
+        # `grep -c ""` counts lines like `wc -l` but without the leading padding
+        # BSD wc emits, which showed up in the message below as "0/       4".
+        local pods_total
+        pods_total=$(kubectl get pods -n game-2048 --no-headers 2>/dev/null | grep -c "" || true)
         
         if [ "$pods_ready" -ge 4 ]; then
             log_info "✅ Application pods: $pods_ready/$pods_total ready"

@@ -156,9 +156,11 @@ jobs:
             bash -n "$f" && echo "ok   $f"
           done
 
-      # NOTE: severity is set to `error` on purpose. The scripts carry a number
-      # of pre-existing SC2155/SC2086 style warnings; failing on those would
-      # make CI red from the first run. Clean those up, then tighten this to
-      # --severity=warning.
+      # The scripts are clean at `warning`, so the gate sits there rather than at
+      # `error`. Worth keeping: the SC2155 warnings this originally tolerated
+      # were hiding a real defect — `local x=$(cmd)` masks the substitution's
+      # exit status, and the pipelines underneath were appending a fallback "0"
+      # to output a failing `wc`/`grep -c` had already produced. Verification
+      # then compared "0\n0" and reported the opposite of the truth.
       - name: ShellCheck
-        run: shellcheck --severity=error scripts/*.sh kubernetes/deploy.sh
+        run: shellcheck --severity=warning scripts/*.sh kubernetes/deploy.sh
