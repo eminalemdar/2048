@@ -2,7 +2,7 @@
 #
 # Pinned to BUILDPLATFORM: the build output is architecture-independent static
 # assets, so there is no reason to run npm under emulation for each platform.
-FROM --platform=$BUILDPLATFORM node:24-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:24.19.0-alpine3.24 AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -20,7 +20,7 @@ RUN npm run build
 # Use nginx to serve static files.
 # The unprivileged variant runs as uid 101 and listens on 8080 — the stock
 # nginx image needs root to bind port 80.
-FROM nginxinc/nginx-unprivileged:alpine
+FROM nginxinc/nginx-unprivileged:1.31.3-alpine3.24
 
 # Copy built files
 COPY --from=builder /app/dist /usr/share/nginx/html

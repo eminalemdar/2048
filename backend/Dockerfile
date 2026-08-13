@@ -3,7 +3,7 @@
 #
 # Pinned to BUILDPLATFORM so multi-arch builds compile natively and cross-link
 # via GOARCH, instead of running the whole toolchain under QEMU emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24 AS builder
 
 # Set working directory
 WORKDIR /app
@@ -26,7 +26,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 
 # Use a minimal image for running.
 # alpine ships ca-certificates-bundle, which the AWS SDK needs for TLS.
-FROM alpine:latest
+#
+# Pinned rather than :latest so rebuilding an old commit reproduces the same
+# runtime. Bump deliberately — a floating tag changes the base without a commit.
+FROM alpine:3.24.1
 
 # Run as an unprivileged, numeric UID. Kubernetes' runAsNonRoot check can only
 # verify a numeric user, so the UID is pinned rather than left to a name.

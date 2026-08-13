@@ -11,7 +11,7 @@ environment  = "dev"
 vpc_cidr = "172.16.0.0/16"
 
 # EKS Configuration
-eks_cluster_version        = "1.33"
+eks_cluster_version        = "1.36"
 # EKS Auto Mode manages nodes for you — there are no instance types or
 # min/max/desired counts to configure.
 eks_auto_mode_node_pools = ["system", "general-purpose"]

@@ -25,7 +25,10 @@ variable "vpc_cidr" {
 variable "eks_cluster_version" {
   description = "EKS cluster version"
   type        = string
-  default     = "1.33"
+  # 1.36 is the newest version EKS offers. Bump deliberately: a stale default
+  # silently builds new clusters several minors behind, and each one drops out
+  # of standard support on its own schedule.
+  default = "1.36"
 }
 
 variable "cluster_endpoint_public_access" {

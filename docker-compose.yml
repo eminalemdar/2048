@@ -3,7 +3,9 @@ services:
   # Note: -inMemory means all data is lost when this container restarts, and
   # the tables have to be recreated by dynamodb-init on every startup.
   dynamodb-local:
-    image: amazon/dynamodb-local:latest
+    # Pinned rather than :latest so a rebuild is reproducible and a new upstream
+    # release cannot change local behaviour without a commit.
+    image: amazon/dynamodb-local:3.3.1
     container_name: 2048-dynamodb
     ports:
       - "8001:8000"
@@ -12,7 +14,7 @@ services:
   # Creates the tables the backend expects, then exits. The backend waits for
   # this to complete successfully before starting.
   dynamodb-init:
-    image: amazon/aws-cli:latest
+    image: amazon/aws-cli:2.36.22
     container_name: 2048-dynamodb-init
     depends_on:
       - dynamodb-local
