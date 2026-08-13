@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -19,78 +20,85 @@ type LeaderboardEntry struct {
 	Moves     int       `json:"moves"`    // Number of moves made
 }
 
+const (
+	// maxCachedEntries bounds the in-memory copy of the leaderboard.
+	maxCachedEntries = 1000
+
+	// leaderboardCacheTTL is how long a loaded snapshot is reused before
+	// hitting persistent storage again. Every read path refreshes, so without
+	// a TTL each request would trigger a full DynamoDB Scan.
+	leaderboardCacheTTL = 5 * time.Second
+)
+
 type Leaderboard struct {
 	entries []LeaderboardEntry
 	mu      sync.RWMutex
+
+	// loadMu guards the refresh cycle. It is deliberately separate from mu so
+	// that a slow reload never blocks readers of the current snapshot.
+	loadMu     sync.Mutex
+	lastLoaded time.Time
 }
 
 var globalLeaderboard = &Leaderboard{
 	entries: make([]LeaderboardEntry, 0),
 }
 
-// AddScore adds a new score to the leaderboard
-func (l *Leaderboard) AddScore(entry LeaderboardEntry) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	// Generate ID if not provided
+// AddScore persists a score and returns the stored entry.
+//
+// The write is synchronous on purpose: the caller reports success to the
+// player, so it must not claim success for a score that was never stored.
+func (l *Leaderboard) AddScore(ctx context.Context, entry LeaderboardEntry) (LeaderboardEntry, error) {
 	if entry.ID == "" {
 		entry.ID = generateID()
 	}
-
-	// Set timestamp if not provided
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
 	}
 
-	l.entries = append(l.entries, entry)
-
-	// Keep only top 1000 scores to prevent memory issues
-	if len(l.entries) > 1000 {
-		l.sortEntries()
-		l.entries = l.entries[:1000]
-	}
-
-	// Save individual entry to DynamoDB immediately
 	if dynamodbClient != nil {
-		go func() {
-			if err := globalLeaderboard.saveEntryToDynamoDB(entry); err != nil {
-				log.Printf("Failed to save entry to DynamoDB: %v", err)
-			}
-		}()
+		if err := l.saveEntryToDynamoDB(ctx, entry); err != nil {
+			return LeaderboardEntry{}, err
+		}
+		// Make the new score visible to the next read rather than waiting out
+		// the cache TTL, so a player sees their own submission immediately.
+		l.invalidateCache()
 	}
+
+	l.mu.Lock()
+	l.entries = append(l.entries, entry)
+	if len(l.entries) > maxCachedEntries {
+		sortEntries(l.entries)
+		l.entries = l.entries[:maxCachedEntries]
+	}
+	l.mu.Unlock()
 
 	log.Printf("New score added: %s - %d points", entry.Name, entry.Score)
+	return entry, nil
 }
 
-// GetTopScores returns the top N scores (always loads fresh from DynamoDB)
+// GetTopScores returns the top N scores.
 func (l *Leaderboard) GetTopScores(limit int) []LeaderboardEntry {
-	// Always load fresh data from DynamoDB to ensure consistency across pods
-	l.loadFromPersistentStorage()
+	l.refreshIfStale()
 
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
-	l.sortEntries()
-
-	if limit > len(l.entries) {
-		limit = len(l.entries)
+	sorted := l.sortedSnapshot()
+	if limit > len(sorted) {
+		limit = len(sorted)
 	}
-
-	result := make([]LeaderboardEntry, limit)
-	copy(result, l.entries[:limit])
-	return result
+	if limit < 0 {
+		limit = 0
+	}
+	return sorted[:limit]
 }
 
-// GetPlayerRank returns the rank of a specific player
+// GetPlayerRank returns the 1-based rank of a specific player, or -1.
 func (l *Leaderboard) GetPlayerRank(playerID string) (int, *LeaderboardEntry) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
+	l.refreshIfStale()
 
-	l.sortEntries()
-
-	for i, entry := range l.entries {
-		if entry.PlayerID == playerID {
+	sorted := l.sortedSnapshot()
+	for i := range sorted {
+		if sorted[i].PlayerID == playerID {
+			entry := sorted[i]
 			return i + 1, &entry
 		}
 	}
@@ -100,10 +108,10 @@ func (l *Leaderboard) GetPlayerRank(playerID string) (int, *LeaderboardEntry) {
 
 // GetStats returns leaderboard statistics
 func (l *Leaderboard) GetStats() map[string]interface{} {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
+	l.refreshIfStale()
 
-	if len(l.entries) == 0 {
+	sorted := l.sortedSnapshot()
+	if len(sorted) == 0 {
 		return map[string]interface{}{
 			"totalPlayers": 0,
 			"totalGames":   0,
@@ -112,32 +120,67 @@ func (l *Leaderboard) GetStats() map[string]interface{} {
 		}
 	}
 
-	l.sortEntries()
-
 	totalScore := 0
 	playerMap := make(map[string]bool)
 
-	for _, entry := range l.entries {
+	for _, entry := range sorted {
 		totalScore += entry.Score
 		playerMap[entry.PlayerID] = true
 	}
 
 	return map[string]interface{}{
 		"totalPlayers": len(playerMap),
-		"totalGames":   len(l.entries),
-		"highestScore": l.entries[0].Score,
-		"averageScore": totalScore / len(l.entries),
+		"totalGames":   len(sorted),
+		"highestScore": sorted[0].Score,
+		"averageScore": totalScore / len(sorted),
 	}
 }
 
-// sortEntries sorts entries by score (descending)
-func (l *Leaderboard) sortEntries() {
-	sort.Slice(l.entries, func(i, j int) bool {
-		if l.entries[i].Score == l.entries[j].Score {
-			// If scores are equal, sort by timestamp (earlier is better)
-			return l.entries[i].Timestamp.Before(l.entries[j].Timestamp)
+// sortedSnapshot returns a sorted copy of the entries.
+//
+// The copy matters: sorting reorders the slice in place, so sorting the shared
+// entries under a read lock would let concurrent readers mutate the same
+// backing array at once. Snapshot under the lock, sort after releasing it.
+func (l *Leaderboard) sortedSnapshot() []LeaderboardEntry {
+	l.mu.RLock()
+	snapshot := make([]LeaderboardEntry, len(l.entries))
+	copy(snapshot, l.entries)
+	l.mu.RUnlock()
+
+	sortEntries(snapshot)
+	return snapshot
+}
+
+// refreshIfStale reloads from persistent storage at most once per
+// leaderboardCacheTTL. All read paths call this so replicas converge on the
+// same data without issuing a full table Scan for every request.
+func (l *Leaderboard) refreshIfStale() {
+	l.loadMu.Lock()
+	defer l.loadMu.Unlock()
+
+	if !l.lastLoaded.IsZero() && time.Since(l.lastLoaded) < leaderboardCacheTTL {
+		return
+	}
+
+	l.loadFromPersistentStorage()
+	l.lastLoaded = time.Now()
+}
+
+// invalidateCache forces the next read to reload from persistent storage.
+func (l *Leaderboard) invalidateCache() {
+	l.loadMu.Lock()
+	l.lastLoaded = time.Time{}
+	l.loadMu.Unlock()
+}
+
+// sortEntries sorts a slice by score (descending), ties broken by the earlier
+// timestamp. It operates on the caller's slice, never on shared state.
+func sortEntries(entries []LeaderboardEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Score == entries[j].Score {
+			return entries[i].Timestamp.Before(entries[j].Timestamp)
 		}
-		return l.entries[i].Score > l.entries[j].Score
+		return entries[i].Score > entries[j].Score
 	})
 }
 
@@ -188,9 +231,16 @@ func (l *Leaderboard) loadFromJSON() {
 	log.Println("Loading leaderboard from JSON storage")
 }
 
+// Count returns the number of entries currently held in memory.
+func (l *Leaderboard) Count() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return len(l.entries)
+}
+
 // Initialize leaderboard on startup
 func initLeaderboard() {
 	log.Println("Initializing leaderboard...")
-	globalLeaderboard.loadFromPersistentStorage()
-	log.Printf("Leaderboard initialized with %d entries", len(globalLeaderboard.entries))
+	globalLeaderboard.refreshIfStale()
+	log.Printf("Leaderboard initialized with %d entries", globalLeaderboard.Count())
 }

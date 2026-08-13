@@ -1,4 +1,5 @@
-FROM node:20-alpine AS builder
+# Node 20 is EOL; Vite 8 requires ^20.19 || >=22.12. Node 24 is the current LTS.
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./

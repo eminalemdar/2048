@@ -1,14 +1,17 @@
-# Start from the official Go base image
-FROM golang:1.22-alpine AS builder
+# Start from the official Go base image. Keep this in step with the `go`
+# directive in go.mod — an older builder cannot compile a newer module.
+FROM golang:1.26-alpine AS builder
 
 # Set working directory
 WORKDIR /app
 
+# Copy the manifests first so the dependency layer is cached independently of
+# source changes; editing a .go file no longer re-downloads every module.
+COPY go.mod go.sum ./
+RUN go mod download
+
 # Copy go source code
 COPY . .
-
-# Download dependencies and build the Go app
-RUN go mod download
 RUN go build -o server .
 
 # Use a minimal image for running

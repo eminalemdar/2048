@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,8 +11,6 @@ import (
 )
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-
 	// Initialize storage backends
 	initStorage()
 

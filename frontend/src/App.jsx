@@ -201,7 +201,11 @@ export default function Game2048() {
       
       const res = await axios.post(`${API}/game/move`, { id: gameIdRef.current, direction: dir });
       
-      setLastBoard(boardRef.current);
+      // Capture the pre-move board before the ref is overwritten below —
+      // diffing against the new board would compare it with itself.
+      const previousBoard = boardRef.current;
+
+      setLastBoard(previousBoard);
       setBoard(res.data.board);
       boardRef.current = res.data.board;
       setScore(res.data.score);
@@ -211,9 +215,8 @@ export default function Game2048() {
 
       // Find only truly new tiles (spawned after move)
       const newTilesArr = [];
-      const oldFlat = boardRef.current.flat();
-      const newFlat = res.data.board.flat();
-      
+      const oldFlat = Array.isArray(previousBoard) ? previousBoard.flat() : [];
+
       res.data.board.forEach((row, r) => {
         row.forEach((cell, c) => {
           const index = r * 4 + c;
@@ -222,7 +225,7 @@ export default function Game2048() {
           }
         });
       });
-      
+
       setNewTiles(newTilesArr);
       setTimeout(() => setNewTiles([]), 200);
       

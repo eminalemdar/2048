@@ -22,6 +22,15 @@ var (
 	dynamodbClient *dynamodb.Client
 )
 
+// dynamoTimeout bounds every DynamoDB call so a stalled request cannot pin a
+// handler goroutine indefinitely.
+const dynamoTimeout = 10 * time.Second
+
+// errNoDynamoDB is returned when the AWS clients were never initialised —
+// which happens when AWS_REGION is unset. Callers surface this as a 500
+// rather than dereferencing a nil client and panicking.
+var errNoDynamoDB = fmt.Errorf("DynamoDB client not initialized: set AWS_REGION (and DYNAMODB_ENDPOINT for local development)")
+
 // initStorage initializes storage clients based on environment variables
 func initStorage() {
 	environment := os.Getenv("ENVIRONMENT")
@@ -170,9 +179,9 @@ func (l *Leaderboard) loadFromS3() {
 }
 
 // DynamoDB Storage Implementation - Save individual entry
-func (l *Leaderboard) saveEntryToDynamoDB(entry LeaderboardEntry) error {
+func (l *Leaderboard) saveEntryToDynamoDB(ctx context.Context, entry LeaderboardEntry) error {
 	if dynamodbClient == nil {
-		return fmt.Errorf("DynamoDB client not initialized")
+		return errNoDynamoDB
 	}
 
 	tableName := os.Getenv("DYNAMODB_TABLE")
@@ -180,7 +189,7 @@ func (l *Leaderboard) saveEntryToDynamoDB(entry LeaderboardEntry) error {
 		tableName = "game2048-leaderboard"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
 	defer cancel()
 
 	item := map[string]types.AttributeValue{
@@ -310,7 +319,11 @@ func (l *Leaderboard) loadFromDynamoDB() {
 // clearDynamoDBTable function removed - we now use append-only approach
 
 // Game session storage functions
-func saveGameSession(game *GameState) error {
+func saveGameSession(ctx context.Context, game *GameState) error {
+	if dynamodbClient == nil {
+		return errNoDynamoDB
+	}
+
 	gameData, err := json.Marshal(game)
 	if err != nil {
 		log.Printf("Failed to marshal game state for game %s: %v", game.ID, err)
@@ -331,7 +344,10 @@ func saveGameSession(game *GameState) error {
 		"ttl":       &types.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(1*time.Hour).Unix(), 10)},
 	}
 
-	_, err = dynamodbClient.PutItem(context.TODO(), &dynamodb.PutItemInput{
+	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
+	defer cancel()
+
+	_, err = dynamodbClient.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(tableName),
 		Item:      item,
 	})
@@ -345,7 +361,11 @@ func saveGameSession(game *GameState) error {
 	return nil
 }
 
-func loadGameSession(gameID string) (*GameState, error) {
+func loadGameSession(ctx context.Context, gameID string) (*GameState, error) {
+	if dynamodbClient == nil {
+		return nil, errNoDynamoDB
+	}
+
 	tableName := os.Getenv("GAME_SESSIONS_TABLE")
 	if tableName == "" {
 		tableName = "game2048-sessions-dev"
@@ -353,7 +373,10 @@ func loadGameSession(gameID string) (*GameState, error) {
 
 	log.Printf("Loading game session %s from table %s", gameID, tableName)
 
-	result, err := dynamodbClient.GetItem(context.TODO(), &dynamodb.GetItemInput{
+	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
+	defer cancel()
+
+	result, err := dynamodbClient.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"id": &types.AttributeValueMemberS{Value: gameID},
@@ -393,13 +416,20 @@ func loadGameSession(gameID string) (*GameState, error) {
 	return &game, nil
 }
 
-func deleteGameSession(gameID string) error {
+func deleteGameSession(ctx context.Context, gameID string) error {
+	if dynamodbClient == nil {
+		return errNoDynamoDB
+	}
+
 	tableName := os.Getenv("GAME_SESSIONS_TABLE")
 	if tableName == "" {
 		tableName = "game2048-sessions-dev"
 	}
 
-	_, err := dynamodbClient.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
+	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
+	defer cancel()
+
+	_, err := dynamodbClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]types.AttributeValue{
 			"id": &types.AttributeValueMemberS{Value: gameID},

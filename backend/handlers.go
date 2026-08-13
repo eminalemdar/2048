@@ -29,7 +29,7 @@ func newGameHandler(w http.ResponseWriter, r *http.Request) {
 	spawnTile(game)
 
 	// Save game session to DynamoDB
-	if err := saveGameSession(game); err != nil {
+	if err := saveGameSession(r.Context(), game); err != nil {
 		log.Printf("Failed to save game session: %v", err)
 		http.Error(w, "Failed to create game", http.StatusInternalServerError)
 		return
@@ -67,7 +67,7 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load game session from DynamoDB
-	game, err := loadGameSession(req.ID)
+	game, err := loadGameSession(r.Context(), req.ID)
 	if err != nil {
 		log.Printf("Game not found: %s, error: %v", req.ID, err)
 		http.Error(w, "Game not found", http.StatusNotFound)
@@ -88,7 +88,7 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Save updated game session to DynamoDB
-		if err := saveGameSession(game); err != nil {
+		if err := saveGameSession(r.Context(), game); err != nil {
 			log.Printf("Failed to save game session after move: %v", err)
 			http.Error(w, "Failed to save game state", http.StatusInternalServerError)
 			return
@@ -114,7 +114,7 @@ func stateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load game session from DynamoDB
-	game, err := loadGameSession(id)
+	game, err := loadGameSession(r.Context(), id)
 	if err != nil {
 		log.Printf("Game not found: %s, error: %v", id, err)
 		http.Error(w, "Game not found", http.StatusNotFound)
@@ -163,14 +163,19 @@ func submitScoreHandler(w http.ResponseWriter, r *http.Request) {
 		Timestamp: time.Now(),
 	}
 
-	// Add to leaderboard
-	globalLeaderboard.AddScore(entry)
+	// Persist the score. AddScore returns the stored entry, which carries the
+	// generated ID — the local `entry` above never receives it.
+	stored, err := globalLeaderboard.AddScore(r.Context(), entry)
+	if err != nil {
+		log.Printf("Failed to save score for %s: %v", submission.Name, err)
+		http.Error(w, "Failed to save score", http.StatusInternalServerError)
+		return
+	}
 
-	// Return the entry with generated ID
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"entry":   entry,
+		"entry":   stored,
 	})
 }
 
