@@ -29,7 +29,7 @@ spec:
         # Registry image: these manifests target EKS Auto Mode's ALB, so the
         # nodes must be able to pull. A local `2048-frontend:latest` tag is not
         # resolvable on EKS. Rebuild with scripts/build_and_push.sh and bump.
-        image: emnalmdr/2048-frontend:v7
+        image: emnalmdr/2048-frontend:v8
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

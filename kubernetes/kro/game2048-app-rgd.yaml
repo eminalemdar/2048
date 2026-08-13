@@ -13,7 +13,7 @@ spec:
       namespace: string | default="game-2048"
 
       # Backend configuration
-      backendImage: string | default="emnalmdr/2048-backend:v7"
+      backendImage: string | default="emnalmdr/2048-backend:v8"
       backendReplicas: integer | default=2
       backendPort: integer | default=8000
 
@@ -21,7 +21,7 @@ spec:
       # frontendPort is the container port: the unprivileged nginx image runs
       # as uid 101 and cannot bind anything below 1024. Callers still reach the
       # Service on frontendServicePort.
-      frontendImage: string | default="emnalmdr/2048-frontend:v7"
+      frontendImage: string | default="emnalmdr/2048-frontend:v8"
       frontendReplicas: integer | default=2
       frontendPort: integer | default=8080
       frontendServicePort: integer | default=80
