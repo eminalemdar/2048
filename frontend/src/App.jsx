@@ -2,7 +2,10 @@ import { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import "./index.css";
 
-const API = "";
+// Empty by default: in the Kubernetes/ALB deployment the frontend and backend
+// share an origin, so relative paths are correct. Set VITE_API_URL at build
+// time to point at a backend on a different origin (e.g. local docker-compose).
+const API = import.meta.env.VITE_API_URL || "";
 
 export default function Game2048() {
   const [gameId, setGameId] = useState(null);

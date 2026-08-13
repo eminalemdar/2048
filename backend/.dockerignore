@@ -1,0 +1,17 @@
+# Compiled binaries — rebuilt inside the image
+2048game
+server
+
+# Docker build files (not needed inside the image)
+Dockerfile
+.dockerignore
+
+# VCS / editor / OS noise
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Docs
+*.md

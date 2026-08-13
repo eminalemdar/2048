@@ -1,0 +1,20 @@
+# Dependencies and build output — reinstalled/rebuilt inside the image
+node_modules
+dist
+
+# Docker build files (not needed inside the image)
+Dockerfile
+.dockerignore
+
+# VCS / editor / OS noise
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Docs
+*.md
+
+# NOTE: nginx.conf must NOT be ignored — the runtime stage COPYs it from the
+# build context.

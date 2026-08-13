@@ -59,9 +59,6 @@ kubectl apply -f namespace.yaml
 print_status "Applying ConfigMap..."
 kubectl apply -f configmap.yaml
 
-print_status "Deploying MongoDB..."
-kubectl apply -f mongodb-deployment.yaml
-
 print_status "Deploying backend..."
 kubectl apply -f backend-deployment.yaml
 kubectl apply -f backend-service.yaml
@@ -78,7 +75,6 @@ kubectl apply -f hpa.yaml
 
 # Wait for deployments to be ready
 print_status "Waiting for deployments to be ready..."
-kubectl wait --for=condition=available --timeout=300s deployment/mongodb-deployment -n game-2048
 kubectl wait --for=condition=available --timeout=300s deployment/backend-deployment -n game-2048
 kubectl wait --for=condition=available --timeout=300s deployment/frontend-deployment -n game-2048
 

@@ -5,6 +5,7 @@ backend/vendor/
 # Build outputs
 frontend/dist/
 backend/server
+backend/2048game
 
 # Environment files
 .env
@@ -37,9 +38,6 @@ pids
 
 # Coverage directory used by tools like istanbul
 coverage/
-
-# Docker
-.dockerignore
 
 # Local .terraform directories
 **/.terraform

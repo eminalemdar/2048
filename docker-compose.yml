@@ -1,14 +1,31 @@
-version: "3.8"
-
 services:
-  # DynamoDB Local for development
+  # DynamoDB Local for development.
+  # Note: -inMemory means all data is lost when this container restarts, and
+  # the tables have to be recreated by dynamodb-init on every startup.
   dynamodb-local:
     image: amazon/dynamodb-local:latest
     container_name: 2048-dynamodb
     ports:
       - "8001:8000"
     command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
-    restart: unless-stopped
+
+  # Creates the tables the backend expects, then exits. The backend waits for
+  # this to complete successfully before starting.
+  dynamodb-init:
+    image: amazon/aws-cli:latest
+    container_name: 2048-dynamodb-init
+    depends_on:
+      - dynamodb-local
+    environment:
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      AWS_DEFAULT_REGION: us-east-1
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      DYNAMODB_TABLE: game2048-leaderboard
+      GAME_SESSIONS_TABLE: game2048-sessions-dev
+    entrypoint: ["/bin/sh", "/init/init_dynamodb_local.sh"]
+    volumes:
+      - ./scripts/init_dynamodb_local.sh:/init/init_dynamodb_local.sh:ro
 
   backend:
     build:
@@ -16,27 +33,34 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - PORT=8000
-      - AWS_REGION=us-east-1
-      - DYNAMODB_TABLE=game2048-leaderboard
-      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
-      # For production, remove DYNAMODB_ENDPOINT and use real DynamoDB
-      # Uncomment for S3 support
-      # - S3_BUCKET=your-2048-game-bucket
-      # For local development with DynamoDB Local
-      - AWS_ACCESS_KEY_ID=dummy
-      - AWS_SECRET_ACCESS_KEY=dummy
+      PORT: "8000"
+      AWS_REGION: us-east-1
+      DYNAMODB_TABLE: game2048-leaderboard
+      GAME_SESSIONS_TABLE: game2048-sessions-dev
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      # Dummy credentials: DynamoDB Local validates the signature format but
+      # not the actual key. For real DynamoDB, drop DYNAMODB_ENDPOINT and these
+      # two variables, and use an IAM role instead.
+      AWS_ACCESS_KEY_ID: dummy
+      AWS_SECRET_ACCESS_KEY: dummy
+      # Uncomment for S3 leaderboard backup support
+      # S3_ENABLED: "true"
+      # S3_BUCKET: your-2048-game-bucket
     depends_on:
-      - dynamodb-local
+      dynamodb-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
+      args:
+        # Locally the browser loads the app from :3000 but must reach the
+        # backend on :8000, so the base URL has to be baked into the bundle at
+        # build time. In EKS this stays empty and the ALB routes by path.
+        VITE_API_URL: "http://localhost:8000"
     ports:
       - "3000:80"
-    environment:
-      - VITE_API=http://localhost:8000
     depends_on:
       - backend
     restart: unless-stopped

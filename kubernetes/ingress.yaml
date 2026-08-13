@@ -6,7 +6,8 @@ metadata:
   labels:
     app: 2048-game
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    # NOTE: no rewrite-target here. The backend serves its routes at their full
+    # paths (/game/new, /leaderboard/top, ...), so rewriting would strip them.
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
@@ -28,6 +29,20 @@ spec:
               number: 80
       - path: /game
         pathType: Prefix
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 8000
+      - path: /leaderboard
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 8000
+      - path: /health
+        pathType: Exact
         backend:
           service:
             name: backend-service
