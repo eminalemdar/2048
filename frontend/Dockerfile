@@ -6,7 +6,11 @@ FROM --platform=$BUILDPLATFORM node:24.19.0-alpine3.24 AS builder
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+# `npm ci` rather than `npm install`: it installs exactly what package-lock.json
+# pins and fails if the lockfile and package.json disagree. `npm install` would
+# happily resolve newer versions and silently produce an image built from
+# different dependencies than CI validated.
+RUN npm ci
 
 COPY . .
 

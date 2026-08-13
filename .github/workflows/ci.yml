@@ -20,9 +20,9 @@ jobs:
     name: Backend (Go)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # Tracks the `go` directive in go.mod so CI cannot drift from the
           # version the Dockerfile builds with.
@@ -56,9 +56,9 @@ jobs:
     name: Frontend (Node)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -82,9 +82,9 @@ jobs:
     name: Infrastructure (OpenTofu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: opentofu/setup-opentofu@v1
+      - uses: opentofu/setup-opentofu@v2
 
       - name: tofu fmt
         working-directory: opentofu
@@ -104,7 +104,7 @@ jobs:
     name: Kubernetes manifests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # PyYAML is not guaranteed to be present on the runner image.
       - name: Install PyYAML
@@ -148,7 +148,7 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Syntax check
         run: |

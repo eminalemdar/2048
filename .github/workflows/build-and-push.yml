@@ -38,7 +38,7 @@ jobs:
         component: [backend, frontend]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve image tag
         id: meta
@@ -63,7 +63,7 @@ jobs:
       # QEMU is not needed: both Dockerfiles pin their build stage to
       # BUILDPLATFORM and cross-compile (Go via GOARCH, the frontend produces
       # architecture-independent static assets), so nothing runs emulated.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Secrets cannot be referenced from an `if:` condition, so availability is
       # resolved here into a step output that `if:` can use. Passing them through
@@ -83,13 +83,13 @@ jobs:
 
       - name: Log in to Docker Hub
         if: steps.creds.outputs.available == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.component }}
           platforms: linux/amd64,linux/arm64
