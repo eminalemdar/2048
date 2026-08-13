@@ -18,13 +18,32 @@ spec:
         app: 2048-frontend
         component: frontend
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: frontend
         image: 2048-frontend:latest
         imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         ports:
-        - containerPort: 80
+        # 8080: the unprivileged nginx image cannot bind port 80.
+        - containerPort: 8080
           name: http
+        # nginx needs these paths writable even when only serving static
+        # files; the rest of the filesystem stays read-only.
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
         resources:
           requests:
             memory: "32Mi"
@@ -35,7 +54,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /
-            port: 80
+            port: 8080
           initialDelaySeconds: 10
           periodSeconds: 30
           timeoutSeconds: 5
@@ -43,9 +62,14 @@ spec:
         readinessProbe:
           httpGet:
             path: /
-            port: 80
+            port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 2
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: nginx-cache
+        emptyDir: {}
       restartPolicy: Always

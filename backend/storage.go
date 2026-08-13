@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -29,7 +30,10 @@ const dynamoTimeout = 10 * time.Second
 // errNoDynamoDB is returned when the AWS clients were never initialised —
 // which happens when AWS_REGION is unset. Callers surface this as a 500
 // rather than dereferencing a nil client and panicking.
-var errNoDynamoDB = fmt.Errorf("DynamoDB client not initialized: set AWS_REGION (and DYNAMODB_ENDPOINT for local development)")
+var errNoDynamoDB = errors.New("DynamoDB client not initialized: set AWS_REGION (and DYNAMODB_ENDPOINT for local development)")
+
+// errAlreadySubmitted signals that a game's score has already been recorded.
+var errAlreadySubmitted = errors.New("score already submitted for this game")
 
 // initStorage initializes storage clients based on environment variables
 func initStorage() {
@@ -318,6 +322,72 @@ func (l *Leaderboard) loadFromDynamoDB() {
 
 // clearDynamoDBTable function removed - we now use append-only approach
 
+// sessionsTableName resolves the game-sessions table once, in one place.
+func sessionsTableName() string {
+	if name := os.Getenv("GAME_SESSIONS_TABLE"); name != "" {
+		return name
+	}
+	return "game2048-sessions-dev"
+}
+
+// claimSubmission atomically marks a session as having had its score
+// submitted, returning errAlreadySubmitted if another request got there first.
+//
+// A read-then-write check would let two concurrent submissions for the same
+// game both pass, so the guard is a DynamoDB condition expression instead.
+// `submitted` is a top-level attribute rather than a field inside the encoded
+// game state, so the condition can be evaluated server-side.
+func claimSubmission(ctx context.Context, gameID string) error {
+	if dynamodbClient == nil {
+		return errNoDynamoDB
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
+	defer cancel()
+
+	_, err := dynamodbClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(sessionsTableName()),
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: gameID},
+		},
+		UpdateExpression:    aws.String("SET submitted = :yes"),
+		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(submitted)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":yes": &types.AttributeValueMemberBOOL{Value: true},
+		},
+	})
+	if err != nil {
+		var failed *types.ConditionalCheckFailedException
+		if errors.As(err, &failed) {
+			return errAlreadySubmitted
+		}
+		return fmt.Errorf("failed to claim submission: %w", err)
+	}
+
+	return nil
+}
+
+// releaseSubmission undoes a claim, used when the score write that followed it
+// failed. Best effort: a failure here only means the player cannot retry.
+func releaseSubmission(ctx context.Context, gameID string) {
+	if dynamodbClient == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
+	defer cancel()
+
+	if _, err := dynamodbClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(sessionsTableName()),
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: gameID},
+		},
+		UpdateExpression: aws.String("REMOVE submitted"),
+	}); err != nil {
+		log.Printf("Failed to release submission claim for game %s: %v", gameID, err)
+	}
+}
+
 // Game session storage functions
 func saveGameSession(ctx context.Context, game *GameState) error {
 	if dynamodbClient == nil {
@@ -330,10 +400,7 @@ func saveGameSession(ctx context.Context, game *GameState) error {
 		return fmt.Errorf("failed to marshal game state: %w", err)
 	}
 
-	tableName := os.Getenv("GAME_SESSIONS_TABLE")
-	if tableName == "" {
-		tableName = "game2048-sessions-dev"
-	}
+	tableName := sessionsTableName()
 
 	log.Printf("Saving game session %s to table %s", game.ID, tableName)
 
@@ -366,10 +433,7 @@ func loadGameSession(ctx context.Context, gameID string) (*GameState, error) {
 		return nil, errNoDynamoDB
 	}
 
-	tableName := os.Getenv("GAME_SESSIONS_TABLE")
-	if tableName == "" {
-		tableName = "game2048-sessions-dev"
-	}
+	tableName := sessionsTableName()
 
 	log.Printf("Loading game session %s from table %s", gameID, tableName)
 
@@ -421,10 +485,7 @@ func deleteGameSession(ctx context.Context, gameID string) error {
 		return errNoDynamoDB
 	}
 
-	tableName := os.Getenv("GAME_SESSIONS_TABLE")
-	if tableName == "" {
-		tableName = "game2048-sessions-dev"
-	}
+	tableName := sessionsTableName()
 
 	ctx, cancel := context.WithTimeout(ctx, dynamoTimeout)
 	defer cancel()

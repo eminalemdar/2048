@@ -303,10 +303,13 @@ metadata:
 spec:
   name: "game2048"
   namespace: "game-2048"
-  backendImage: "emnalmdr/2048-backend:latest"
+  backendImage: "emnalmdr/2048-backend:v6"
   backendReplicas: 2
-  frontendImage: "emnalmdr/2048-frontend:v5"
+  frontendImage: "emnalmdr/2048-frontend:v6"
   frontendReplicas: 2
+  # Container port: the frontend runs unprivileged and cannot bind port 80.
+  frontendPort: 8080
+  frontendServicePort: 80
   tableName: "game2048-leaderboard-dev"
   region: "eu-west-1"
   ingressClass: "alb"

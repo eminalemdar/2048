@@ -13,14 +13,18 @@ spec:
       namespace: string | default="game-2048"
 
       # Backend configuration
-      backendImage: string | default="emnalmdr/2048-backend:latest"
+      backendImage: string | default="emnalmdr/2048-backend:v6"
       backendReplicas: integer | default=2
       backendPort: integer | default=8000
 
-      # Frontend configuration
-      frontendImage: string | default="emnalmdr/2048-frontend:v2"
+      # Frontend configuration.
+      # frontendPort is the container port: the unprivileged nginx image runs
+      # as uid 101 and cannot bind anything below 1024. Callers still reach the
+      # Service on frontendServicePort.
+      frontendImage: string | default="emnalmdr/2048-frontend:v6"
       frontendReplicas: integer | default=2
-      frontendPort: integer | default=80
+      frontendPort: integer | default=8080
+      frontendServicePort: integer | default=80
 
       # DynamoDB configuration
       tableName: string | default="game2048-leaderboard"
@@ -82,10 +86,21 @@ spec:
                 app.kubernetes.io/component: backend
             spec:
               serviceAccountName: ${schema.spec.name}-backend
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                seccompProfile:
+                  type: RuntimeDefault
               containers:
                 - name: backend
                   image: ${schema.spec.backendImage}
                   imagePullPolicy: IfNotPresent
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                      drop: ["ALL"]
                   ports:
                     - containerPort: ${schema.spec.backendPort}
                       name: http
@@ -167,10 +182,33 @@ spec:
                 app.kubernetes.io/name: ${schema.spec.name}-frontend
                 app.kubernetes.io/component: frontend
             spec:
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 101
+                runAsGroup: 101
+                seccompProfile:
+                  type: RuntimeDefault
+              volumes:
+                - name: tmp
+                  emptyDir: {}
+                - name: nginx-cache
+                  emptyDir: {}
               containers:
                 - name: frontend
                   image: ${schema.spec.frontendImage}
                   imagePullPolicy: IfNotPresent
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                      drop: ["ALL"]
+                  # nginx writes its pid and temp files even when only serving
+                  # static assets, so these two paths must stay writable.
+                  volumeMounts:
+                    - name: tmp
+                      mountPath: /tmp
+                    - name: nginx-cache
+                      mountPath: /var/cache/nginx
                   ports:
                     - containerPort: ${schema.spec.frontendPort}
                       name: http
@@ -209,7 +247,7 @@ spec:
         spec:
           type: ClusterIP
           ports:
-            - port: ${schema.spec.frontendPort}
+            - port: ${schema.spec.frontendServicePort}
               targetPort: ${schema.spec.frontendPort}
               protocol: TCP
               name: http
@@ -267,4 +305,4 @@ spec:
                       service:
                         name: ${schema.spec.name}-frontend-service
                         port:
-                          number: ${schema.spec.frontendPort}
+                          number: ${schema.spec.frontendServicePort}

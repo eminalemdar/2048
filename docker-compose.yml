@@ -38,6 +38,9 @@ services:
       DYNAMODB_TABLE: game2048-leaderboard
       GAME_SESSIONS_TABLE: game2048-sessions-dev
       DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      # Restrict cross-origin access to the local frontend. Leaving this unset
+      # would mean "*"; an empty value disables CORS entirely (same-origin).
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
       # Dummy credentials: DynamoDB Local validates the signature format but
       # not the actual key. For real DynamoDB, drop DYNAMODB_ENDPOINT and these
       # two variables, and use an IAM role instead.
@@ -60,7 +63,8 @@ services:
         # build time. In EKS this stays empty and the ALB routes by path.
         VITE_API_URL: "http://localhost:8000"
     ports:
-      - "3000:80"
+      # The container serves on 8080 because it runs unprivileged.
+      - "3000:8080"
     depends_on:
       - backend
     restart: unless-stopped

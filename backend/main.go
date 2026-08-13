@@ -11,6 +11,9 @@ import (
 )
 
 func main() {
+	// Resolve the CORS policy before any request can be served
+	initCORS()
+
 	// Initialize storage backends
 	initStorage()
 
@@ -20,16 +23,16 @@ func main() {
 	// Game cleanup is now handled by DynamoDB TTL
 
 	// Game endpoints
-	http.HandleFunc("/health", withCORS(healthHandler))
-	http.HandleFunc("/game/new", withCORS(newGameHandler))
-	http.HandleFunc("/game/move", withCORS(moveHandler))
-	http.HandleFunc("/game/state", withCORS(stateHandler))
+	http.HandleFunc("/health", withMiddleware(healthHandler))
+	http.HandleFunc("/game/new", withMiddleware(newGameHandler))
+	http.HandleFunc("/game/move", withMiddleware(moveHandler))
+	http.HandleFunc("/game/state", withMiddleware(stateHandler))
 
 	// Leaderboard endpoints
-	http.HandleFunc("/leaderboard/submit", withCORS(submitScoreHandler))
-	http.HandleFunc("/leaderboard/top", withCORS(leaderboardHandler))
-	http.HandleFunc("/leaderboard/rank", withCORS(playerRankHandler))
-	http.HandleFunc("/leaderboard/stats", withCORS(statsHandler))
+	http.HandleFunc("/leaderboard/submit", withMiddleware(submitScoreHandler))
+	http.HandleFunc("/leaderboard/top", withMiddleware(leaderboardHandler))
+	http.HandleFunc("/leaderboard/rank", withMiddleware(playerRankHandler))
+	http.HandleFunc("/leaderboard/stats", withMiddleware(statsHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {

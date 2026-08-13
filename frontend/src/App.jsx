@@ -159,28 +159,36 @@ export default function Game2048() {
   const submitScore = async () => {
     if (!playerName.trim() || score === 0) return;
 
-    const duration = gameStartTime ? Math.floor((Date.now() - gameStartTime) / 1000) : 0;
     const playerId = localStorage.getItem('2048-player-id') || generatePlayerId();
-    
+
     if (!localStorage.getItem('2048-player-id')) {
       localStorage.setItem('2048-player-id', playerId);
     }
 
     try {
+      // Only the game reference and display name are sent. Score, moves and
+      // duration are taken from the server's own record of the game, so a
+      // tampered client cannot inflate them.
       await axios.post(`${API}/leaderboard/submit`, {
+        gameId: gameIdRef.current,
         playerId,
-        name: playerName.trim(),
-        score,
-        duration,
-        moves: moveCount
+        name: playerName.trim()
       });
-      
+
       localStorage.setItem('2048-player-name', playerName.trim());
       setShowSubmitScore(false);
       setShowLeaderboard(true);
       fetchLeaderboard();
     } catch (err) {
-      setError("Error submitting score.");
+      const status = err.response?.status;
+      if (status === 409) {
+        setError("This game's score has already been submitted.");
+        setShowSubmitScore(false);
+      } else if (status === 400 || status === 404) {
+        setError(err.response?.data?.trim?.() || "Could not submit this score.");
+      } else {
+        setError("Error submitting score.");
+      }
     }
   };
 

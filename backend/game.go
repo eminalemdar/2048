@@ -1,24 +1,39 @@
 package main
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
 	"math/rand"
-	"strconv"
 	"time"
 )
 
 type GameState struct {
-	ID        string    `json:"id"`
-	Board     [4][4]int `json:"board"`
-	Score     int       `json:"score"`
-	GameOver  bool      `json:"gameOver"`
-	Won       bool      `json:"won"`
+	ID       string    `json:"id"`
+	Board    [4][4]int `json:"board"`
+	Score    int       `json:"score"`
+	GameOver bool      `json:"gameOver"`
+	Won      bool      `json:"won"`
+	// Moves is counted server-side so score submissions cannot claim a
+	// move count the server never observed.
+	Moves     int       `json:"moves"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
 // Removed in-memory storage - now using DynamoDB
 
+// generateID returns a 128-bit random identifier.
+//
+// Game IDs are effectively bearer tokens: anyone holding one can read and
+// mutate that session via /game/state and /game/move. The previous scheme
+// (timestamp + 4 digits) was trivially enumerable, so this uses crypto/rand.
 func generateID() string {
-	return time.Now().Format("20060102150405") + strconv.Itoa(rand.Intn(10000))
+	b := make([]byte, 16)
+	if _, err := crand.Read(b); err != nil {
+		// crypto/rand is not expected to fail; continuing would hand out
+		// predictable session identifiers, so refuse instead.
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 func spawnTile(game *GameState) {

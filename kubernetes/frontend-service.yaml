@@ -9,8 +9,9 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+  # Callers still use 80; the pod serves on 8080 because it runs unprivileged.
   - port: 80
-    targetPort: 80
+    targetPort: 8080
     protocol: TCP
     name: http
   selector:

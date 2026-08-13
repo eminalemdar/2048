@@ -2,11 +2,58 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
+
+const (
+	maxNameRunes     = 32
+	maxPlayerIDRunes = 64
+)
+
+// sanitizeName validates a player-supplied display name. It is stored and
+// later rendered by other clients, so control characters are rejected rather
+// than silently stripped.
+func sanitizeName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", errors.New("name is required")
+	}
+	if utf8.RuneCountInString(name) > maxNameRunes {
+		return "", fmt.Errorf("name must be %d characters or fewer", maxNameRunes)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "", errors.New("name contains invalid characters")
+		}
+	}
+	return name, nil
+}
+
+// sanitizePlayerID bounds the client-generated identity string. It is an
+// opaque label used only for grouping a player's own entries.
+func sanitizePlayerID(raw string) (string, error) {
+	id := strings.TrimSpace(raw)
+	if id == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(id) > maxPlayerIDRunes {
+		return "", fmt.Errorf("playerId must be %d characters or fewer", maxPlayerIDRunes)
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return "", errors.New("playerId contains invalid characters")
+		}
+	}
+	return id, nil
+}
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -81,6 +128,7 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 
 	moved := applyMove(game, req.Direction)
 	if moved {
+		game.Moves++
 		spawnTile(game)
 		checkWin(game)
 		if !canMove(game) {
@@ -133,12 +181,14 @@ func submitScoreHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The score, move count and duration are deliberately NOT accepted from the
+	// client — they are read back from the server's own record of the game.
+	// Only the display name and the player's local identity come from the
+	// request, and neither can influence ranking.
 	type ScoreSubmission struct {
+		GameID   string `json:"gameId"`
 		PlayerID string `json:"playerId"`
 		Name     string `json:"name"`
-		Score    int    `json:"score"`
-		Duration int    `json:"duration"`
-		Moves    int    `json:"moves"`
 	}
 
 	var submission ScoreSubmission
@@ -147,19 +197,61 @@ func submitScoreHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate submission
-	if submission.Name == "" || submission.Score <= 0 {
-		http.Error(w, "Invalid submission data", http.StatusBadRequest)
+	if submission.GameID == "" {
+		http.Error(w, "Game ID required", http.StatusBadRequest)
 		return
 	}
 
-	// Create leaderboard entry
+	name, err := sanitizeName(submission.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	playerID, err := sanitizePlayerID(submission.PlayerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Authoritative game state.
+	game, err := loadGameSession(r.Context(), submission.GameID)
+	if err != nil {
+		log.Printf("Score submission for unknown game %s: %v", submission.GameID, err)
+		http.Error(w, "Game not found", http.StatusNotFound)
+		return
+	}
+
+	// A score is only meaningful once the game has actually ended, otherwise a
+	// player could submit repeatedly and keep their best intermediate result.
+	if !game.GameOver {
+		http.Error(w, "Game is not over yet", http.StatusBadRequest)
+		return
+	}
+
+	if game.Score <= 0 {
+		http.Error(w, "Game has no score to submit", http.StatusBadRequest)
+		return
+	}
+
+	// Claim the submission before writing, so two concurrent requests for the
+	// same game cannot both land on the leaderboard.
+	if err := claimSubmission(r.Context(), submission.GameID); err != nil {
+		if errors.Is(err, errAlreadySubmitted) {
+			http.Error(w, "Score already submitted for this game", http.StatusConflict)
+			return
+		}
+		log.Printf("Failed to claim submission for game %s: %v", submission.GameID, err)
+		http.Error(w, "Failed to save score", http.StatusInternalServerError)
+		return
+	}
+
 	entry := LeaderboardEntry{
-		PlayerID:  submission.PlayerID,
-		Name:      submission.Name,
-		Score:     submission.Score,
-		Duration:  submission.Duration,
-		Moves:     submission.Moves,
+		PlayerID:  playerID,
+		Name:      name,
+		Score:     game.Score,
+		Moves:     game.Moves,
+		Duration:  int(time.Since(game.CreatedAt).Seconds()),
 		Timestamp: time.Now(),
 	}
 
@@ -167,7 +259,9 @@ func submitScoreHandler(w http.ResponseWriter, r *http.Request) {
 	// generated ID — the local `entry` above never receives it.
 	stored, err := globalLeaderboard.AddScore(r.Context(), entry)
 	if err != nil {
-		log.Printf("Failed to save score for %s: %v", submission.Name, err)
+		// The claim is only meaningful if the score was actually recorded.
+		releaseSubmission(r.Context(), submission.GameID)
+		log.Printf("Failed to save score for %s: %v", name, err)
 		http.Error(w, "Failed to save score", http.StatusInternalServerError)
 		return
 	}
