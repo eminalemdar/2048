@@ -1,0 +1,137 @@
+name: Build and Push Images
+
+# Publishing is deliberately NOT wired to every push to main — that would
+# republish on each commit and make :latest a moving target with no warning.
+# Either push a v* tag, or run this manually and give it a tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (e.g. v8). Defaults to the commit SHA.'
+        required: false
+        type: string
+      push:
+        description: 'Actually push to the registry. Unchecked = build only.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-push-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY_NAMESPACE: emnalmdr
+
+jobs:
+  build:
+    name: Build ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: meta
+        # The requested tag arrives via env rather than being interpolated into
+        # the script, so a crafted workflow_dispatch input cannot inject shell.
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          if [ -n "$REQUESTED_TAG" ]; then
+            tag="$REQUESTED_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="$(git rev-parse --short HEAD)"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY_NAMESPACE}/2048-${COMPONENT}" >> "$GITHUB_OUTPUT"
+          echo "Publishing as ${REGISTRY_NAMESPACE}/2048-${COMPONENT}:${tag}"
+
+      # QEMU is not needed: both Dockerfiles pin their build stage to
+      # BUILDPLATFORM and cross-compile (Go via GOARCH, the frontend produces
+      # architecture-independent static assets), so nothing runs emulated.
+      - uses: docker/setup-buildx-action@v3
+
+      # Secrets cannot be referenced from an `if:` condition, so availability is
+      # resolved here into a step output that `if:` can use. Passing them through
+      # env keeps the values out of the script text.
+      - name: Check registry credentials
+        id: creds
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set — building without pushing."
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.creds.outputs.available == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          platforms: linux/amd64,linux/arm64
+          # Push only when credentials exist and the run asked for it.
+          # NOTE: `inputs.push != false` would be wrong here. On a tag push the
+          # inputs context is empty, and GitHub's loose equality treats '' and
+          # false as equal — so that expression is false on exactly the trigger
+          # that is meant to publish. Gate on the event type instead.
+          push: ${{ steps.creds.outputs.available == 'true' && (github.event_name != 'workflow_dispatch' || inputs.push) }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          # NOTE: VITE_API_URL is intentionally left unset for the frontend.
+          # The published bundle must call the API with relative paths so the
+          # ALB can serve the app and the API from a single origin. Only
+          # docker-compose passes a value, for local cross-origin development.
+
+      - name: Verify the multi-arch manifest
+        if: steps.creds.outputs.available == 'true' && (github.event_name != 'workflow_dispatch' || inputs.push)
+        run: |
+          docker buildx imagetools inspect \
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}'
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+    steps:
+      - name: Remind about manifest tags
+        # Quoted heredoc: the backticks below are Markdown, and must reach the
+        # summary literally rather than being treated as command substitution.
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ### Images built
+
+          If these were pushed, update the tags that reference them:
+
+          - `kubernetes/kro/instances/game2048-app-instance.yaml`
+          - `kubernetes/kro/game2048-app-rgd.yaml` (schema defaults)
+          - `kubernetes/backend-deployment.yaml` / `frontend-deployment.yaml`
+          EOF

@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only read access is needed; nothing here publishes anything.
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Tracks the `go` directive in go.mod so CI cannot drift from the
+          # version the Dockerfile builds with.
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: gofmt
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: go test (race detector)
+        working-directory: backend
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        working-directory: backend
+        run: go tool cover -func=coverage.out | tail -20
+
+  frontend:
+    name: Frontend (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci` fails if package.json and the lockfile disagree, which also
+      # catches a dependency change committed without regenerating the lock.
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Audit (fail on high or critical)
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+  infra:
+    name: Infrastructure (OpenTofu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+
+      - name: tofu fmt
+        working-directory: opentofu
+        run: tofu fmt -check -recursive -diff
+
+      # -backend=false: validation needs providers and modules, not state.
+      # No AWS credentials are required, and none are configured here.
+      - name: tofu init
+        working-directory: opentofu
+        run: tofu init -backend=false -input=false
+
+      - name: tofu validate
+        working-directory: opentofu
+        run: tofu validate
+
+  manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PyYAML is not guaranteed to be present on the runner image.
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Parse every YAML file
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+          failed = False
+          for path in sorted(pathlib.Path("kubernetes").rglob("*.yaml")):
+              try:
+                  list(yaml.safe_load_all(path.read_text()))
+                  print(f"ok   {path}")
+              except Exception as exc:
+                  print(f"FAIL {path}: {exc}")
+                  failed = True
+          for path in ["docker-compose.yml"]:
+              try:
+                  yaml.safe_load(pathlib.Path(path).read_text())
+                  print(f"ok   {path}")
+              except Exception as exc:
+                  print(f"FAIL {path}: {exc}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: Validate against Kubernetes schemas
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz kubeconform
+          # The kro/ tree is built from CRDs (kro.run, *.services.k8s.aws,
+          # eks.amazonaws.com) that kubeconform has no schemas for, so missing
+          # schemas are skipped rather than failing the build. Core resources
+          # are still checked strictly.
+          ./kubeconform -strict -summary -ignore-missing-schemas \
+            kubernetes/*.yaml kubernetes/kro/*.yaml kubernetes/kro/instances/*.yaml
+
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: |
+          for f in scripts/*.sh kubernetes/deploy.sh; do
+            bash -n "$f" && echo "ok   $f"
+          done
+
+      # NOTE: severity is set to `error` on purpose. The scripts carry a number
+      # of pre-existing SC2155/SC2086 style warnings; failing on those would
+      # make CI red from the first run. Clean those up, then tighten this to
+      # --severity=warning.
+      - name: ShellCheck
+        run: shellcheck --severity=error scripts/*.sh kubernetes/deploy.sh
